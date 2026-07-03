@@ -1,22 +1,68 @@
+import json
 import os
 import requests
 from urllib.parse import urlencode
 
-# ================= КОНФИГУРАЦИЯ =================
-PUBLIC_URL = "https://disk.yandex.ru/d/tenAj8XlAQEPXA"
-
-MINECRAFT_DIR = os.path.join(
-    os.environ.get("APPDATA", ""),
-    ".minecraft",
-    "versions",
-    "Sex3"
+# ================= ЗНАЧЕНИЯ ПО УМОЛЧАНИЮ =================
+DEFAULT_MINECRAFT_DIR = os.path.join(
+    os.environ.get("APPDATA", ""), ".minecraft", "versions", "Sex3"
 )
-# ================================================
+DEFAULT_PUBLIC_URL = "https://disk.yandex.ru/d/tenAj8XlAQEPXA"
+# =========================================================
 
 API_BASE_URL = "https://cloud-api.yandex.net/v1/disk/public/resources"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
+
+# Путь к файлу конфигурации (рядом со скриптом)
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "updater_config.json")
+
+
+def load_or_create_config():
+    """
+    Загружает конфигурацию из JSON или запрашивает ввод у пользователя,
+    если файл отсутствует/неполный. Возвращает (minecraft_dir, public_url).
+    """
+    config = {}
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        except Exception as e:
+            print(f"⚠️ Ошибка чтения конфигурационного файла: {e}")
+            print("Будут запрошены новые настройки.\n")
+
+    # Если конфиг пуст или отсутствуют необходимые ключи — запрашиваем у пользователя
+    if not config or "minecraft_dir" not in config or "public_url" not in config:
+        print("Первый запуск или повреждённый файл настроек. Укажите параметры.\n")
+        mine_dir = input(
+            f"Введите путь к папке сборки Minecraft (по умолчанию: {DEFAULT_MINECRAFT_DIR}): "
+        ).strip()
+        if not mine_dir:
+            mine_dir = DEFAULT_MINECRAFT_DIR
+
+        public_url = input(
+            f"Введите публичную ссылку Яндекс.Диска (по умолчанию: {DEFAULT_PUBLIC_URL}): "
+        ).strip()
+        if not public_url:
+            public_url = DEFAULT_PUBLIC_URL
+
+        config = {"minecraft_dir": mine_dir, "public_url": public_url}
+        save_config(config["minecraft_dir"], config["public_url"])
+    return config.get("minecraft_dir", DEFAULT_MINECRAFT_DIR), config.get("public_url", DEFAULT_PUBLIC_URL)
+
+
+def save_config(minecraft_dir, public_url):
+    """Сохраняет настройки в JSON рядом со скриптом."""
+    config = {"minecraft_dir": minecraft_dir, "public_url": public_url}
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+        print(f"Настройки сохранены в {CONFIG_PATH}\n")
+    except Exception as e:
+        print(f"⚠️ Не удалось сохранить настройки: {e}")
+
 
 def get_yandex_folder_structure(public_key, remote_folder_path):
     """
@@ -72,6 +118,7 @@ def get_yandex_folder_structure(public_key, remote_folder_path):
         print(f"❌ Ошибка сети: {e}")
         return {}, False
 
+
 def get_local_files(base_dir, folder_name):
     local_dict = {}
     target_path = os.path.join(base_dir, folder_name)
@@ -83,6 +130,7 @@ def get_local_files(base_dir, folder_name):
             rel_path = os.path.relpath(full_path, base_dir).replace('\\', '/')
             local_dict[rel_path] = os.path.getsize(full_path)
     return local_dict
+
 
 def download_file(download_url, local_path):
     os.makedirs(os.path.dirname(local_path), exist_ok=True)
@@ -97,21 +145,22 @@ def download_file(download_url, local_path):
         print(f"Ошибка скачивания {local_path}: {e}")
     return False
 
-def sync_mods():
+
+def sync_mods(minecraft_dir, public_url):
     """Синхронизация только папки mods."""
     print("\n===== СИНХРОНИЗАЦИЯ МОДОВ =====")
-    cloud_files, success = get_yandex_folder_structure(PUBLIC_URL, "/mods")
+    cloud_files, success = get_yandex_folder_structure(public_url, "/mods")
     if not success:
         print("⚠️ Не удалось получить список файлов модов. Синхронизация прервана.")
         return
 
-    local_files = get_local_files(MINECRAFT_DIR, "mods")
+    local_files = get_local_files(minecraft_dir, "mods")
 
     # Удаление лишних модов
     deleted = 0
     for local_rel_path in local_files:
         if local_rel_path not in cloud_files:
-            full_local_path = os.path.join(MINECRAFT_DIR, local_rel_path.replace('/', os.sep))
+            full_local_path = os.path.join(minecraft_dir, local_rel_path.replace('/', os.sep))
             try:
                 os.remove(full_local_path)
                 print(f"🗑️ Удалён: {local_rel_path}")
@@ -122,7 +171,7 @@ def sync_mods():
     # Скачивание/обновление модов
     downloaded = 0
     for cloud_rel_path, (download_url, cloud_size) in cloud_files.items():
-        full_local_path = os.path.join(MINECRAFT_DIR, cloud_rel_path.replace('/', os.sep))
+        full_local_path = os.path.join(minecraft_dir, cloud_rel_path.replace('/', os.sep))
         need_download = False
         if cloud_rel_path not in local_files:
             need_download = True
@@ -139,13 +188,21 @@ def sync_mods():
 
     print(f"\nИтог: скачано/обновлено модов: {downloaded}, удалено лишних: {deleted}")
 
-def main():
-    print("Проверка папки сборки...")
-    if not os.path.exists(MINECRAFT_DIR):
-        os.makedirs(MINECRAFT_DIR, exist_ok=True)
 
-    sync_mods()
+def main():
+    # Загрузка или создание конфигурации
+    minecraft_dir, public_url = load_or_create_config()
+    print(f"Папка сборки: {minecraft_dir}")
+    print(f"Публичная ссылка: {public_url}\n")
+
+    # Проверка и создание папки сборки при необходимости
+    if not os.path.exists(minecraft_dir):
+        print("Создание папки сборки...")
+        os.makedirs(minecraft_dir, exist_ok=True)
+
+    sync_mods(minecraft_dir, public_url)
     print("\n✅ Синхронизация завершена.")
+
 
 if __name__ == "__main__":
     try:
