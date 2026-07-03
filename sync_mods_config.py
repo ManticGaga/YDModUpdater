@@ -15,8 +15,9 @@ MINECRAFT_DIR = os.path.join(
     os.environ.get("APPDATA", ""), ".minecraft", "versions", "Sex3"
 )
 
-# Ключ: имя на диске (без лишних слэшей)
-CATEGORIES = {"Моды (mods)": "mods", "Конфиги (config)": "config"}
+# Ключ: имя на диске (без лишних слэшей).
+# Работаем только с папкой mods — папку config трогать не нужно.
+CATEGORIES = {"Моды (mods)": "mods"}
 # ================================================
 
 API_BASE_URL = "https://cloud-api.yandex.net/v1/disk/public/resources"
@@ -172,24 +173,9 @@ class UpdaterApp(tk.Tk):
         чтобы помочь понять реальные имена папок на диске."""
         self.after(0, self.log_message, "\n[ДИАГНОСТИКА] Чтение корня публичной папки...")
 
-        params = {"public_key": PUBLIC_KEY}
-        try:
-            response = requests.get(API_BASE_URL, params=params, headers=HEADERS, timeout=15)
-        except requests.exceptions.RequestException as e:
-            self.after(0, self.log_error, "Диагностика", f"Ошибка запроса к API: {e}")
+        items, ok = self.list_public_folder(PUBLIC_KEY, None)
+        if not ok:
             return
-
-        if response.status_code != 200:
-            self.after(
-                0,
-                self.log_error,
-                "Диагностика",
-                f"Сервер API ответил HTTP {response.status_code}: {response.text[:200]}"
-            )
-            return
-
-        data = response.json()
-        items = data.get("_embedded", {}).get("items") or data.get("items") or []
         if not items:
             self.after(0, self.log_message, "[ДИАГНОСТИКА] Корень публичной папки пуст.")
             return
@@ -201,39 +187,49 @@ class UpdaterApp(tk.Tk):
             kind = "папка" if item.get("type") == "dir" else "файл"
             self.after(0, self.log_message, f"  - {item.get('name')} ({kind})")
 
-    # =============== ФУНКЦИЯ ДЛЯ РАБОТЫ С API ===============
-    def get_yandex_folder_structure(self, public_key, remote_folder_path=""):
-        """
-        Получает структуру файлов из публичной папки Яндекс.Диска через официальное API.
-        public_key — идентификатор папки (из ссылки).
-        remote_folder_path — относительный путь внутри папки (например, "mods").
-        Возвращает (dict, bool) — словарь {относительный_путь: (ссылка_скачивания, размер)} и успех операции.
-        """
-        files_dict = {}
-        params = {
-            "public_key": public_key
-        }
-        if remote_folder_path:
-            params["path"] = remote_folder_path.strip("/")
+    # =============== ФУНКЦИИ ДЛЯ РАБОТЫ С API ===============
+    def list_public_folder(self, public_key, api_path):
+        """Возвращает (список_элементов, успех) для одной папки публичной ссылки.
 
-        self.after(
-            0,
-            self.log_message,
-            f"[СЕТЬ] Запрос API: {API_BASE_URL} с параметрами {params}"
-        )
+        api_path — это значение поля 'path', которое API вернул для нужной папки
+        (например, '/mods'), либо None для корня публичной ссылки. Важно: путь
+        нельзя собирать вручную из имён — для публичных папок нужно использовать
+        именно тот 'path', который отдаёт сам API, иначе запрос отвечает 404.
 
-        try:
-            response = requests.get(API_BASE_URL, params=params, headers=HEADERS, timeout=15)
+        Поддерживается постраничная выдача: у папки модов легко может быть больше
+        стандартных 20 элементов, поэтому мы забираем все страницы по offset.
+        """
+        all_items = []
+        offset = 0
+        limit = 100
+
+        while True:
+            params = {"public_key": public_key, "limit": limit, "offset": offset}
+            if api_path:
+                params["path"] = api_path
+
+            self.after(
+                0,
+                self.log_message,
+                f"[СЕТЬ] Запрос API: {API_BASE_URL} с параметрами {params}"
+            )
+
+            try:
+                response = requests.get(
+                    API_BASE_URL, params=params, headers=HEADERS, timeout=15
+                )
+            except requests.exceptions.RequestException as e:
+                self.after(0, self.log_error, "Сеть", f"Ошибка запроса к API: {e}")
+                return [], False
+
             if response.status_code == 404:
                 self.after(
                     0,
                     self.log_error,
                     "Сеть",
-                    f"Ресурс '{remote_folder_path or PUBLIC_KEY}' не найден (HTTP 404). "
-                    "Проверьте, что папка с таким именем действительно существует в корне "
-                    "публичной ссылки (используйте кнопку 'Диагностика облака')."
+                    f"Ресурс '{api_path or 'корень'}' не найден (HTTP 404)."
                 )
-                return {}, False
+                return [], False
             if response.status_code != 200:
                 self.after(
                     0,
@@ -241,54 +237,106 @@ class UpdaterApp(tk.Tk):
                     "Сеть",
                     f"Сервер API ответил HTTP {response.status_code}: {response.text[:200]}"
                 )
-                return {}, False
+                return [], False
 
-            data = response.json()
-            # В ответе могут быть ключи _embedded.items или просто items
-            items = data.get("_embedded", {}).get("items") or data.get("items")
-            if not items:
-                self.after(
-                    0,
-                    self.log_message,
-                    f"[ОБЛАКО] В папке '{remote_folder_path or 'корень'}' нет элементов."
-                )
-                return files_dict, True
+            try:
+                data = response.json()
+            except Exception as e:
+                self.after(0, self.log_error, "Сеть", f"Ошибка разбора JSON: {e}")
+                return [], False
 
-            for item in items:
-                name = item.get("name")
-                if not name:
-                    continue
+            embedded = data.get("_embedded", {})
+            items = embedded.get("items", [])
+            all_items.extend(items)
 
-                # Формируем относительный путь
-                rel_path = f"{remote_folder_path}/{name}" if remote_folder_path else name
+            total = embedded.get("total")
+            offset += limit
+            # Останавливаемся, когда получили все элементы либо страница пустая.
+            if not items or total is None or offset >= total:
+                break
 
-                if item.get("type") == "dir":
-                    # Рекурсивно читаем подпапку
-                    sub_files, sub_ok = self.get_yandex_folder_structure(
-                        public_key, rel_path
-                    )
-                    if not sub_ok:
-                        return {}, False
-                    files_dict.update(sub_files)
-                elif item.get("type") == "file":
-                    download_url = item.get("file")
-                    size = item.get("size", 0)
-                    if download_url:
-                        files_dict[rel_path] = (download_url, size)
+        return all_items, True
 
+    def collect_files_recursive(self, public_key, api_path, rel_prefix, files_dict):
+        """Рекурсивно обходит папку публичной ссылки и наполняет files_dict.
+
+        api_path — 'path' папки из ответа API, rel_prefix — относительный путь
+        для локального сопоставления (например, 'mods' -> 'mods/подпапка').
+        Ключи в files_dict имеют вид 'mods/.../file' — так же, как их формирует
+        get_local_files, поэтому файлы напрямую сравниваются.
+        """
+        items, ok = self.list_public_folder(public_key, api_path)
+        if not ok:
+            return False
+
+        for item in items:
+            name = item.get("name")
+            if not name:
+                continue
+
+            rel_path = f"{rel_prefix}/{name}"
+
+            if item.get("type") == "dir":
+                if not self.collect_files_recursive(
+                    public_key, item.get("path"), rel_path, files_dict
+                ):
+                    return False
+            elif item.get("type") == "file":
+                download_url = item.get("file")
+                size = item.get("size", 0)
+                if download_url:
+                    files_dict[rel_path] = (download_url, size)
+
+        return True
+
+    def get_yandex_folder_structure(self, public_key, folder_name):
+        """
+        Получает структуру файлов конкретной папки (например, 'mods') из публичной
+        ссылки Яндекс.Диска.
+
+        Навигация выполняется так: сначала читаем корень публичной ссылки, находим
+        в нём папку с нужным именем и берём её настоящий 'path' из ответа API — и
+        уже по нему рекурсивно обходим содержимое. Это надёжнее, чем собирать путь
+        вручную (последнее давало 404).
+
+        Возвращает (dict, bool) — словарь {относительный_путь: (ссылка, размер)}
+        и признак успеха.
+        """
+        root_items, ok = self.list_public_folder(public_key, None)
+        if not ok:
+            return {}, False
+
+        target = next(
+            (
+                it
+                for it in root_items
+                if it.get("type") == "dir" and it.get("name") == folder_name
+            ),
+            None,
+        )
+        if target is None:
             self.after(
                 0,
-                self.log_message,
-                f"[ОБЛАКО] Прочитано файлов в '{remote_folder_path or 'корень'}': {len(files_dict)}"
+                self.log_error,
+                "Облако",
+                f"Папка '{folder_name}' не найдена в корне публичной ссылки. "
+                "Проверьте имя (кнопка 'Диагностика облака')."
             )
-            return files_dict, True
+            return {}, False
 
-        except requests.exceptions.RequestException as e:
-            self.after(0, self.log_error, "Сеть", f"Ошибка запроса к API: {e}")
+        files_dict = {}
+        ok = self.collect_files_recursive(
+            public_key, target.get("path"), folder_name, files_dict
+        )
+        if not ok:
             return {}, False
-        except Exception as e:
-            self.after(0, self.log_error, "Сеть", f"Критическая ошибка при разборе JSON: {e}")
-            return {}, False
+
+        self.after(
+            0,
+            self.log_message,
+            f"[ОБЛАКО] Прочитано файлов в папке '{folder_name}': {len(files_dict)}"
+        )
+        return files_dict, True
 
     # ================================================================
 
