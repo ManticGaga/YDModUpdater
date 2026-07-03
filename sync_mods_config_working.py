@@ -5,6 +5,7 @@ from urllib.parse import urlencode
 # ================= КОНФИГУРАЦИЯ =================
 # Ваша проверенная публичная ссылка
 PUBLIC_URL = "https://disk.yandex.ru/d/tenAj8XlAQEPXA"
+PUBLIC_KEY = PUBLIC_URL   # вместо extract_public_key(PUBLIC_URL)
 
 # Точный путь к сборке игрока
 MINECRAFT_DIR = os.path.join(
