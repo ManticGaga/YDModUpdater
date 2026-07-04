@@ -1,6 +1,5 @@
 import json
 import os
-import shutil
 import threading
 import subprocess
 import sys
@@ -9,24 +8,62 @@ from tkinter import filedialog, messagebox, ttk
 
 import requests
 
-# ================= ЗНАЧЕНИЯ ПО УМОЛЧАНИЮ =================
+# ================= КОНФИГУРАЦИЯ ЗАПУСКА (launcher_config.json) =================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.path.dirname(sys.executable)
-DEFAULT_ROOT_DIR = BASE_DIR                     # Папка, которую выберет пользователь (корень для Minecraft)
-DEFAULT_PUBLIC_URL = "https://disk.yandex.ru/d/tenAj8XlAQEPXA"
-DEFAULT_NICKNAME = "ManticGaga"
+LAUNCHER_CONFIG_PATH = os.path.join(BASE_DIR, "launcher_config.json")
 
-# Параметры для cmd-launcher
-MC_VERSION = "1.21.1"
-LOADER = "neoforge"
-LOADER_VERSION = "21.1.228"
-JVM_FLAGS = (
-    "-Xms128M -Xmx8755M -XX:+UnlockExperimentalVMOptions -XX:+UseZGC "
-    "-XX:ZAllocationSpikeTolerance=5 -XX:+AlwaysPreTouch -XX:+DisableExplicitGC "
-    "-XX:+PerfDisableSharedMem -Dusing.aikars.flags=https://emc.gs -Daikars.new.flags=true "
-    "-Duser.timezone=Europe/Moscow -Dfile.encoding=UTF-8"
-)
+DEFAULT_LAUNCHER_CONFIG = {
+    "minecraft_version": "1.21.1",
+    "loader": "neoforge",
+    "loader_version": "21.1.228",
+    "jvm_flags": (
+        "-Xms128M -Xmx8755M -XX:+UnlockExperimentalVMOptions -XX:+UseZGC "
+        "-XX:ZAllocationSpikeTolerance=5 -XX:+AlwaysPreTouch -XX:+DisableExplicitGC "
+        "-XX:+PerfDisableSharedMem -Dusing.aikars.flags=https://emc.gs -Daikars.new.flags=true "
+        "-Duser.timezone=Europe/Moscow -Dfile.encoding=UTF-8"
+    ),
+    "default_public_url": "https://disk.yandex.ru/d/tenAj8XlAQEPXA",
+    "default_nickname": "ManticGaga"
+}
 
-CATEGORIES = {"Моды (mods)": "mods"}
+def load_launcher_config():
+    """Загружает конфигурацию запуска из launcher_config.json, при необходимости создаёт файл."""
+    if not os.path.exists(LAUNCHER_CONFIG_PATH):
+        try:
+            with open(LAUNCHER_CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(DEFAULT_LAUNCHER_CONFIG, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            messagebox.showwarning("Ошибка", f"Не удалось создать {LAUNCHER_CONFIG_PATH}:\n{e}")
+            return DEFAULT_LAUNCHER_CONFIG
+        return DEFAULT_LAUNCHER_CONFIG
+
+    try:
+        with open(LAUNCHER_CONFIG_PATH, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        # Заполняем отсутствующие ключи значениями по умолчанию
+        for key, value in DEFAULT_LAUNCHER_CONFIG.items():
+            if key not in config:
+                config[key] = value
+        return config
+    except Exception as e:
+        messagebox.showwarning("Ошибка", f"Не удалось загрузить {LAUNCHER_CONFIG_PATH}:\n{e}\nИспользуются значения по умолчанию.")
+        return DEFAULT_LAUNCHER_CONFIG
+
+# Загружаем конфигурацию один раз при старте
+LAUNCHER_CONFIG = load_launcher_config()
+
+# Извлекаем значения
+MC_VERSION = LAUNCHER_CONFIG["minecraft_version"]
+LOADER = LAUNCHER_CONFIG["loader"]
+LOADER_VERSION = LAUNCHER_CONFIG["loader_version"]
+JVM_FLAGS = LAUNCHER_CONFIG["jvm_flags"]
+DEFAULT_PUBLIC_URL = LAUNCHER_CONFIG["default_public_url"]
+DEFAULT_NICKNAME = LAUNCHER_CONFIG["default_nickname"]
+# ================================================================================
+
+DEFAULT_ROOT_DIR = BASE_DIR  # Папка по умолчанию для Minecraft
+
+CATEGORIES = {"Моды (mods)": "instances/mods"}
 
 API_BASE_URL = "https://cloud-api.yandex.net/v1/disk/public/resources"
 HEADERS = {
@@ -394,7 +431,6 @@ class UpdaterApp(tk.Tk):
     def _launch_minecraft_thread(self):
         """Выполняет синхронизацию модов и запуск игры (инстанс уже есть)."""
         try:
-            # Синхронизируем моды без удаления и без лишних окон
             success, _, _ = self.sync_process(["mods"], silent=True)
             if not success:
                 self.after(0, lambda: [
@@ -467,7 +503,7 @@ class UpdaterApp(tk.Tk):
                 self.after(0, self.log_error, "Диск", f"Не удалось создать папку {minecraft_dir}: {e}")
                 return False, 0, 0
 
-        total_actions = []   # Только загрузки, без удалений
+        total_actions = []
         has_errors = False
 
         self.after(0, self.log_message, "\n--- ЭТАП 1: Получение структуры файлов ---")
@@ -509,7 +545,7 @@ class UpdaterApp(tk.Tk):
 
         completed_tasks = 0
         downloaded = 0
-        deleted = 0   # останется нулём
+        deleted = 0
 
         for action_type, rel_path, url in total_actions:
             full_local_path = os.path.join(minecraft_dir, rel_path.replace("/", os.sep))
@@ -653,5 +689,46 @@ class UpdaterApp(tk.Tk):
 
 
 if __name__ == "__main__":
-    app = UpdaterApp()
-    app.mainloop()
+    import sys
+
+    if "--headless" in sys.argv:
+        # Запуск без UI
+        print("[INFO] Headless mode started")
+        # Создаём приложение, но не запускаем главный цикл
+        app = UpdaterApp()
+        app.withdraw()  # скрываем главное окно
+
+        # Переопределяем методы логирования на консольный вывод
+        def log_headless(msg):
+            print(msg)
+        app.log_message = log_headless
+        app.log_error = lambda ctx, msg: print(f"ERROR [{ctx}] {msg}")
+
+        # Переопределяем messagebox, чтобы не показывать окна
+        def silent_error(title, msg):
+            print(f"ERROR {title}: {msg}")
+        tk.messagebox.showinfo = silent_error
+        tk.messagebox.showerror = silent_error
+        tk.messagebox.showwarning = silent_error
+        tk.messagebox.askyesno = lambda title, msg: False  # по умолчанию "Нет"
+
+        # Проверяем, установлен ли инстанс
+        if not app.is_instance_installed():
+            # Пытаемся установить
+            if not app._install_instance():
+                print("FATAL: Cannot install Minecraft instance.")
+                sys.exit(1)
+
+        # Запускаем синхронизацию модов и игру (без GUI-потоков, можно использовать тот же метод)
+        # Так как app.launch_minecraft запускает поток с after и messagebox, проще вызвать напрямую
+        # нужную цепочку в текущем потоке с блокировкой.
+        success, _, _ = app.sync_process(["mods"], silent=True)
+        if not success:
+            print("WARNING: Mod sync had errors, but launching anyway.")
+        
+        app._launch_game()
+        # Даём игре немного времени на старт, затем выходим
+        sys.exit(0)
+    else:
+        app = UpdaterApp()
+        app.mainloop()
