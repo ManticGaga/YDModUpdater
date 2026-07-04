@@ -1,0 +1,2 @@
+python MinecraftLauncherScript.py
+pause

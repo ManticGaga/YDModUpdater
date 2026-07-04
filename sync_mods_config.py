@@ -4,18 +4,18 @@ import threading
 import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-
 import requests
+import subprocess
+import shutil
 
 # ================= ЗНАЧЕНИЯ ПО УМОЛЧАНИЮ =================
 DEFAULT_MINECRAFT_DIR = os.path.join(
     os.environ.get("APPDATA", ""), ".minecraft", "versions", "Sex3"
 )
 DEFAULT_PUBLIC_URL = "https://disk.yandex.ru/d/tenAj8XlAQEPXA"
+DEFAULT_NICKNAME = "ManticGaga"
 # =========================================================
 
-# Ключ: имя на диске (без лишних слэшей).
-# Работаем только с папкой mods — папку config трогать не нужно.
 CATEGORIES = {"Моды (mods)": "mods"}
 
 API_BASE_URL = "https://cloud-api.yandex.net/v1/disk/public/resources"
@@ -25,11 +25,6 @@ HEADERS = {
 
 
 def resolve_public_key(url_or_key):
-    """Готовит значение параметра public_key для API Яндекс.Диска.
-
-    Для современных коротких ссылок вида https://disk.yandex.ru/d/xxxxx
-    API принимает только ПОЛНУЮ ссылку в качестве public_key.
-    """
     if not url_or_key:
         return ""
     return url_or_key.strip()
@@ -43,26 +38,24 @@ class UpdaterApp(tk.Tk):
         self.geometry("600x550")
         self.resizable(False, False)
 
-        # ---------- ОПРЕДЕЛЯЕМ ПУТЬ К ПАПКЕ С ПРОГРАММОЙ ----------
         if getattr(sys, 'frozen', False):
-            # Запущено из PyInstaller exe
             base_path = os.path.dirname(sys.executable)
         else:
-            # Обычный Python-скрипт
             base_path = os.path.dirname(os.path.abspath(__file__))
 
+        self.base_path = base_path
         self.config_path = os.path.join(base_path, "updater_config.json")
 
-        # Загружаем или запрашиваем настройки
-        self.minecraft_dir, self.public_url = self.load_or_create_config()
+        self.minecraft_dir, self.public_url, self.nickname, self.launcher_path = self.load_or_create_config()
         self.public_key = resolve_public_key(self.public_url)
 
         self.checkbox_vars = {}
         self.create_widgets()
 
+        self.after(1000, self.auto_check)
+
     # ---------- работа с конфигурацией ----------
     def load_or_create_config(self):
-        """Загружает конфиг из JSON или запускает диалог первого запуска."""
         config = {}
         if os.path.exists(self.config_path):
             try:
@@ -74,22 +67,35 @@ class UpdaterApp(tk.Tk):
                     f"Не удалось прочитать файл настроек:\n{e}\nБудут использованы значения по умолчанию.",
                 )
 
-        # Если конфиг пуст или отсутствуют ключи, показываем диалог
-        if not config or "minecraft_dir" not in config or "public_url" not in config:
+        required_keys = ["minecraft_dir", "public_url", "nickname"]
+        if not config or any(k not in config for k in required_keys):
             config = self.request_config_dialog(
                 config.get("minecraft_dir", DEFAULT_MINECRAFT_DIR),
                 config.get("public_url", DEFAULT_PUBLIC_URL),
+                config.get("nickname", DEFAULT_NICKNAME),
+                config.get("launcher_path", ""),
             )
-            # Сохраняем, даже если пользователь ничего не менял (чтобы файл появился)
-            self.save_config(config["minecraft_dir"], config["public_url"])
+            self.save_config(
+                config["minecraft_dir"],
+                config["public_url"],
+                config["nickname"],
+                config.get("launcher_path", ""),
+            )
 
-        return config.get("minecraft_dir", DEFAULT_MINECRAFT_DIR), config.get(
-            "public_url", DEFAULT_PUBLIC_URL
+        return (
+            config.get("minecraft_dir", DEFAULT_MINECRAFT_DIR),
+            config.get("public_url", DEFAULT_PUBLIC_URL),
+            config.get("nickname", DEFAULT_NICKNAME),
+            config.get("launcher_path", ""),
         )
 
-    def save_config(self, minecraft_dir, public_url):
-        """Записывает настройки в JSON."""
-        config = {"minecraft_dir": minecraft_dir, "public_url": public_url}
+    def save_config(self, minecraft_dir, public_url, nickname, launcher_path=""):
+        config = {
+            "minecraft_dir": minecraft_dir,
+            "public_url": public_url,
+            "nickname": nickname,
+            "launcher_path": launcher_path,
+        }
         try:
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(config, f, ensure_ascii=False, indent=2)
@@ -99,17 +105,20 @@ class UpdaterApp(tk.Tk):
                 f"Не удалось записать файл настроек:\n{e}",
             )
 
-    def request_config_dialog(self, current_dir, current_url):
-        """Показывает диалог настройки пути и ссылки, возвращает словарь с ключами."""
+    def request_config_dialog(self, current_dir, current_url, current_nick, current_launcher):
         dialog = tk.Toplevel(self)
         dialog.title("Настройки обновления")
-        dialog.geometry("550x220")
+        dialog.geometry("600x380")
         dialog.resizable(False, False)
-        dialog.grab_set()  # модальное окно
+        dialog.grab_set()
 
-        result = {"minecraft_dir": current_dir, "public_url": current_url}
+        result = {
+            "minecraft_dir": current_dir,
+            "public_url": current_url,
+            "nickname": current_nick,
+            "launcher_path": current_launcher,
+        }
 
-        # ----- Поле выбора папки -----
         tk.Label(dialog, text="Папка Minecraft (со сборкой):").grid(
             row=0, column=0, sticky="w", padx=10, pady=(15, 0)
         )
@@ -128,7 +137,6 @@ class UpdaterApp(tk.Tk):
         btn_browse = tk.Button(dialog, text="Обзор...", command=browse_folder)
         btn_browse.grid(row=1, column=1, padx=(0, 10), pady=5)
 
-        # ----- Поле для публичной ссылки -----
         tk.Label(dialog, text="Публичная ссылка Яндекс.Диска:").grid(
             row=2, column=0, sticky="w", padx=10, pady=(15, 0)
         )
@@ -136,18 +144,47 @@ class UpdaterApp(tk.Tk):
         entry_url = tk.Entry(dialog, textvariable=url_var, width=50)
         entry_url.grid(row=3, column=0, padx=(10, 5), pady=5, sticky="we")
 
-        # ----- Кнопки -----
+        tk.Label(dialog, text="Ваш игровой никнейм:").grid(
+            row=4, column=0, sticky="w", padx=10, pady=(15, 0)
+        )
+        nick_var = tk.StringVar(value=result["nickname"])
+        entry_nick = tk.Entry(dialog, textvariable=nick_var, width=30)
+        entry_nick.grid(row=5, column=0, padx=(10, 5), pady=5, sticky="w")
+
+        tk.Label(dialog, text="Путь к cmd-launcher.exe (оставьте пустым для авто-поиска):").grid(
+            row=6, column=0, sticky="w", padx=10, pady=(15, 0)
+        )
+        launcher_var = tk.StringVar(value=result["launcher_path"])
+        entry_launcher = tk.Entry(dialog, textvariable=launcher_var, width=50)
+        entry_launcher.grid(row=7, column=0, padx=(10, 5), pady=5, sticky="we")
+
+        def browse_launcher():
+            path = filedialog.askopenfilename(
+                title="Выберите cmd-launcher.exe",
+                filetypes=[("Executable", "*.exe"), ("All files", "*.*")],
+                initialdir=os.path.dirname(launcher_var.get()) if launcher_var.get() else "",
+            )
+            if path:
+                launcher_var.set(path)
+
+        btn_browse_launcher = tk.Button(dialog, text="Обзор...", command=browse_launcher)
+        btn_browse_launcher.grid(row=7, column=1, padx=(0, 10), pady=5)
+
         def on_save():
             result["minecraft_dir"] = dir_var.get().strip()
             result["public_url"] = url_var.get().strip()
+            result["nickname"] = nick_var.get().strip() or DEFAULT_NICKNAME
+            result["launcher_path"] = launcher_var.get().strip()
             dialog.destroy()
 
         def on_default():
             dir_var.set(DEFAULT_MINECRAFT_DIR)
             url_var.set(DEFAULT_PUBLIC_URL)
+            nick_var.set(DEFAULT_NICKNAME)
+            launcher_var.set("")
 
         frame_buttons = tk.Frame(dialog)
-        frame_buttons.grid(row=4, column=0, columnspan=2, pady=15)
+        frame_buttons.grid(row=8, column=0, columnspan=2, pady=15)
         tk.Button(
             frame_buttons,
             text="По умолчанию",
@@ -163,7 +200,6 @@ class UpdaterApp(tk.Tk):
             width=14,
         ).pack(side="left", padx=5)
 
-        # Ждём закрытия диалога
         self.wait_window(dialog)
         return result
 
@@ -192,11 +228,11 @@ class UpdaterApp(tk.Tk):
         )
         self.progress.pack(pady=15)
 
-        frame_buttons = tk.Frame(self)
-        frame_buttons.pack(pady=5)
+        frame_buttons_row1 = tk.Frame(self)
+        frame_buttons_row1.pack(pady=5)
 
         self.btn_start = tk.Button(
-            frame_buttons,
+            frame_buttons_row1,
             text="Начать обновление",
             command=self.start_sync_thread,
             bg="#4CAF50",
@@ -205,10 +241,37 @@ class UpdaterApp(tk.Tk):
             padx=10,
             pady=5,
         )
-        self.btn_start.pack(side="left", padx=10)
+        self.btn_start.pack(side="left", padx=5)
+
+        self.btn_launch = tk.Button(
+            frame_buttons_row1,
+            text="Запустить игру",
+            command=self.launch_game,
+            bg="#FF9800",
+            fg="white",
+            font=("Arial", 11, "bold"),
+            padx=10,
+            pady=5,
+        )
+        self.btn_launch.pack(side="left", padx=5)
+
+        self.btn_config = tk.Button(
+            frame_buttons_row1,
+            text="Настройки",
+            command=self.open_settings,
+            bg="#9E9E9E",
+            fg="white",
+            font=("Arial", 11),
+            padx=10,
+            pady=5,
+        )
+        self.btn_config.pack(side="left", padx=5)
+
+        frame_buttons_row2 = tk.Frame(self)
+        frame_buttons_row2.pack(pady=5)
 
         self.btn_copy = tk.Button(
-            frame_buttons,
+            frame_buttons_row2,
             text="Скопировать логи",
             command=self.copy_logs_to_clipboard,
             bg="#2196F3",
@@ -217,10 +280,10 @@ class UpdaterApp(tk.Tk):
             padx=10,
             pady=5,
         )
-        self.btn_copy.pack(side="left", padx=10)
+        self.btn_copy.pack(side="left", padx=5)
 
         self.btn_diag = tk.Button(
-            frame_buttons,
+            frame_buttons_row2,
             text="Диагностика облака",
             command=self.start_debug_thread,
             bg="#9E9E9E",
@@ -229,19 +292,7 @@ class UpdaterApp(tk.Tk):
             padx=10,
             pady=5,
         )
-        self.btn_diag.pack(side="left", padx=10)
-
-        self.btn_config = tk.Button(
-            frame_buttons,
-            text="Настройки",
-            command=self.open_settings,
-            bg="#FF9800",
-            fg="white",
-            font=("Arial", 11),
-            padx=10,
-            pady=5,
-        )
-        self.btn_config.pack(side="left", padx=10)
+        self.btn_diag.pack(side="left", padx=5)
 
         self.txt_log = tk.Text(
             self, height=10, width=75, font=("Consolas", 9), bg="#1e1e1e", fg="#ffffff"
@@ -249,22 +300,22 @@ class UpdaterApp(tk.Tk):
         self.txt_log.pack(pady=10, padx=20)
         self.log_message("[СИСТЕМА] Инициализация завершена. Готов к работе.")
         self.log_message(f"[СИСТЕМА] Используется публичный ключ: {self.public_key}")
+        self.log_message(f"[СИСТЕМА] Игровой никнейм: {self.nickname}")
+        if self.launcher_path:
+            self.log_message(f"[СИСТЕМА] Путь к лаунчеру: {self.launcher_path}")
 
     def open_settings(self):
-        """Повторно открывает диалог настроек и применяет изменения."""
         new_config = self.request_config_dialog(
-            self.minecraft_dir, self.public_url
+            self.minecraft_dir, self.public_url, self.nickname, self.launcher_path
         )
         if new_config:
             self.minecraft_dir = new_config["minecraft_dir"]
             self.public_url = new_config["public_url"]
+            self.nickname = new_config["nickname"]
+            self.launcher_path = new_config.get("launcher_path", "")
             self.public_key = resolve_public_key(self.public_url)
-            self.save_config(self.minecraft_dir, self.public_url)
+            self.save_config(self.minecraft_dir, self.public_url, self.nickname, self.launcher_path)
             self.log_message("[СИСТЕМА] Настройки обновлены.")
-            messagebox.showinfo(
-                "Настройки",
-                "Настройки сохранены. Новый путь и ссылка будут использованы при следующем обновлении.",
-            )
 
     def log_message(self, message):
         self.txt_log.insert(tk.END, message + "\n")
@@ -277,7 +328,7 @@ class UpdaterApp(tk.Tk):
         logs_text = self.txt_log.get("1.0", tk.END).strip()
         self.clipboard_clear()
         self.clipboard_append(logs_text)
-        messagebox.showinfo("Буфер обмена", "Логи успешно скопированы!")
+        self.log_message("[СИСТЕМА] Логи скопированы в буфер обмена.")
 
     def update_gui_progress(self, percent):
         self.progress["value"] = percent
@@ -287,14 +338,121 @@ class UpdaterApp(tk.Tk):
             f"\n✨ [УСПЕХ] Скачано файлов: {downloaded}, удалено устаревших: {deleted}."
         )
         self.btn_start.config(state=tk.NORMAL)
-        messagebox.showinfo("Готово", "Синхронизация успешно завершена!")
 
+    # ---------- Автоматическая проверка ----------
+    def auto_check(self):
+        selected = [path for path, var in self.checkbox_vars.items() if var.get()]
+        if not selected:
+            self.log_message("[СИСТЕМА] Нет выбранных компонентов, автоматическая проверка пропущена.")
+            return
+        self.log_message("[СИСТЕМА] Запуск автоматической проверки обновлений...")
+        self.start_sync_thread()
+
+    # ---------- Запуск игры (ИСПРАВЛЕНО) ----------
+    def launch_game(self):
+        """Запускает Minecraft через cmd-launcher.exe с созданием инстанса."""
+        # Определяем путь к cmd-launcher.exe
+        launcher_exe = self.launcher_path
+        if not launcher_exe or not os.path.exists(launcher_exe):
+            local_launcher = os.path.join(self.base_path, "cmd-launcher.exe")
+            if os.path.exists(local_launcher):
+                launcher_exe = local_launcher
+            else:
+                launcher_exe = shutil.which("cmd-launcher.exe")
+        if not launcher_exe or not os.path.exists(launcher_exe):
+            self.log_error("Запуск", "Не найден cmd-launcher.exe.")
+            messagebox.showerror(
+                "Ошибка",
+                "Не найден cmd-launcher.exe.\n"
+                "Укажите путь к нему в настройках или поместите в папку программы."
+            )
+            return
+
+        self.log_message(f"[ЗАПУСК] Используется лаунчер: {launcher_exe}")
+
+        work_dir = self.minecraft_dir
+        if not os.path.exists(work_dir):
+            try:
+                os.makedirs(work_dir, exist_ok=True)
+                self.log_message(f"[ДИСК] Создана папка сборки: {work_dir}")
+            except Exception as e:
+                self.log_error("Диск", f"Не удалось создать папку: {e}")
+                messagebox.showerror("Ошибка", f"Не удалось создать папку сборки:\n{e}")
+                return
+
+        # Параметры инстанса (можно вынести в конфиг)
+        mc_version = "1.21.1"
+        loader = "neoforge"
+        loader_version = "21.1.228"
+        instance_name = "Sex3"
+
+        # 1. Создаём (или обновляем) инстанс
+        create_cmd = [
+            launcher_exe,
+            "inst", "create",
+            "--dir", work_dir,
+            "-v", mc_version,
+            "-l", loader,
+            "--loader-version", loader_version,
+            instance_name
+        ]
+        self.log_message(f"[ЗАПУСК] Создание инстанса: {' '.join(create_cmd)}")
+        try:
+            result = subprocess.run(
+                create_cmd,
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            if result.returncode != 0:
+                self.log_error("Создание инстанса", f"Код ошибки {result.returncode}")
+                if result.stderr:
+                    self.log_error("stderr", result.stderr.strip())
+                if result.stdout:
+                    self.log_message(f"[stdout] {result.stdout.strip()}")
+                # Не прерываем выполнение, возможно инстанс уже существует
+            else:
+                self.log_message("[ЗАПУСК] Инстанс успешно создан/обновлён.")
+        except Exception as e:
+            self.log_error("Создание инстанса", str(e))
+            # Продолжаем, может он уже есть
+
+        # 2. Запускаем игру
+        jvm_flags = (
+            '-Xms128M -Xmx8755M -XX:+UnlockExperimentalVMOptions -XX:+UseZGC '
+            '-XX:ZAllocationSpikeTolerance=5 -XX:+AlwaysPreTouch -XX:+DisableExplicitGC '
+            '-XX:+PerfDisableSharedMem -Dusing.aikars.flags=https://emc.gs '
+            '-Daikars.new.flags=true -Duser.timezone=Europe/Moscow -Dfile.encoding=UTF-8'
+        )
+
+        start_cmd = [
+            launcher_exe,
+            "start",
+            instance_name,
+            "--username", self.nickname,
+            "--dir", work_dir,
+            "--jvm-args", jvm_flags
+        ]
+        self.log_message(f"[ЗАПУСК] Запуск игры: {' '.join(start_cmd)}")
+        try:
+            subprocess.Popen(
+                start_cmd,
+                creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            self.log_message("[ЗАПУСК] Игра запущена через cmd-launcher.")
+        except Exception as e:
+            self.log_error("Запуск игры", str(e))
+            messagebox.showerror("Ошибка запуска", f"Не удалось запустить игру:\n{e}")
+
+    # ---------- Синхронизация (остальное без изменений) ----------
     def start_sync_thread(self):
         selected_paths = [
             path for path, var in self.checkbox_vars.items() if var.get()
         ]
         if not selected_paths:
-            messagebox.showwarning("Внимание", "Выберите компоненты для скачивания!")
+            self.log_message("[СИСТЕМА] Нет выбранных компонентов для обновления.")
             return
 
         self.btn_start.config(state=tk.DISABLED)
@@ -552,15 +710,6 @@ class UpdaterApp(tk.Tk):
             )
             self.after(0, self.debug_cloud)
             self.after(0, lambda: self.btn_start.config(state=tk.NORMAL))
-            self.after(
-                0,
-                lambda: messagebox.showerror(
-                    "Ошибка синхронизации",
-                    "Не удалось прочитать список файлов на Яндекс.Диске.\n"
-                    "Проверьте лог диагностики: возможно, имена папок 'mods'/'config' "
-                    "на диске отличаются от ожидаемых.",
-                ),
-            )
             return
 
         total_tasks = len(total_actions)
@@ -571,15 +720,7 @@ class UpdaterApp(tk.Tk):
                 "\n✨ [РЕЗУЛЬТАТ] Все локальные файлы полностью соответствуют облаку!",
             )
             self.after(0, self.update_gui_progress, 100)
-            self.after(
-                0,
-                lambda: [
-                    self.btn_start.config(state=tk.NORMAL),
-                    messagebox.showinfo(
-                        "Готово", "У вас установлена актуальная версия сборки!"
-                    ),
-                ],
-            )
+            self.after(0, lambda: self.btn_start.config(state=tk.NORMAL))
             return
 
         self.after(
@@ -634,13 +775,6 @@ class UpdaterApp(tk.Tk):
                 f"\n⚠️ [ЗАВЕРШЕНО С ОШИБКАМИ] Успешно обработано файлов: {downloaded + deleted} из {total_tasks}.",
             )
             self.after(0, lambda: self.btn_start.config(state=tk.NORMAL))
-            self.after(
-                0,
-                lambda: messagebox.showwarning(
-                    "Предупреждение",
-                    "Обновление завершено, но некоторые файлы не удалось обработать.",
-                ),
-            )
         else:
             self.after(0, self.sync_completed, downloaded, deleted)
 
