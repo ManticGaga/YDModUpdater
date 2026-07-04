@@ -1,2 +1,0 @@
-python sync_mods_config.py
-pause
