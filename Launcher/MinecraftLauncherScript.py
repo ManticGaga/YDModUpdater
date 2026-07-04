@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import threading
 import subprocess
 import sys
@@ -23,7 +24,8 @@ DEFAULT_LAUNCHER_CONFIG = {
         "-Duser.timezone=Europe/Moscow -Dfile.encoding=UTF-8"
     ),
     "default_public_url": "https://disk.yandex.ru/d/tenAj8XlAQEPXA",
-    "default_nickname": "ManticGaga"
+    "default_nickname": "ManticGaga",
+    "server": ""  # IP:port сервера, если нужно автоматическое подключение
 }
 
 def load_launcher_config():
@@ -49,21 +51,24 @@ def load_launcher_config():
         messagebox.showwarning("Ошибка", f"Не удалось загрузить {LAUNCHER_CONFIG_PATH}:\n{e}\nИспользуются значения по умолчанию.")
         return DEFAULT_LAUNCHER_CONFIG
 
-# Загружаем конфигурацию один раз при старте
 LAUNCHER_CONFIG = load_launcher_config()
 
-# Извлекаем значения
 MC_VERSION = LAUNCHER_CONFIG["minecraft_version"]
 LOADER = LAUNCHER_CONFIG["loader"]
 LOADER_VERSION = LAUNCHER_CONFIG["loader_version"]
 JVM_FLAGS = LAUNCHER_CONFIG["jvm_flags"]
 DEFAULT_PUBLIC_URL = LAUNCHER_CONFIG["default_public_url"]
 DEFAULT_NICKNAME = LAUNCHER_CONFIG["default_nickname"]
+SERVER_ADDRESS = LAUNCHER_CONFIG.get("server", "")
 # ================================================================================
 
-DEFAULT_ROOT_DIR = BASE_DIR  # Папка по умолчанию для Minecraft
+DEFAULT_ROOT_DIR = BASE_DIR
 
-CATEGORIES = {"Моды (mods)": "instances/mods"}
+# Категории: {UI-имя: (локальный_путь_от_инстанса, облачная_папка)}
+CATEGORIES = {
+    "Моды (mods)": ("mods", "mods"),
+    "Конфигурация (config)": ("config", "config")
+}
 
 API_BASE_URL = "https://cloud-api.yandex.net/v1/disk/public/resources"
 HEADERS = {
@@ -83,10 +88,9 @@ class UpdaterApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Minecraft Modpack Updater")
-        self.geometry("600x620")
+        self.geometry("600x650")
         self.resizable(False, False)
 
-        # Определяем путь к папке с программой
         if getattr(sys, 'frozen', False):
             self.base_path = os.path.dirname(sys.executable)
         else:
@@ -94,8 +98,11 @@ class UpdaterApp(tk.Tk):
 
         self.config_path = os.path.join(self.base_path, "updater_config.json")
 
-        # Загружаем или запрашиваем настройки (корневая папка, ссылка, ник)
-        self.root_dir, self.public_url, self.nickname = self.load_or_create_config()
+        # Загружаем настройки (корневая папка, ссылка, ник, выбранные категории)
+        (self.root_dir,
+         self.public_url,
+         self.nickname,
+         self.selected_categories) = self.load_or_create_config()
         self.public_key = resolve_public_key(self.public_url)
 
         self.checkbox_vars = {}
@@ -103,13 +110,12 @@ class UpdaterApp(tk.Tk):
 
     # ---------- Вспомогательные пути ----------
     def get_minecraft_dir(self):
-        """Папка инстанса Sex3 (внутри Minecraft)."""
-        return os.path.join(self.root_dir, "Minecraft", "instances/Sex3")
+        """Папка инстанса Sex3: root_dir/Minecraft/instances/Sex3"""
+        return os.path.join(self.root_dir, "Minecraft", "instances", "Sex3")
 
     def get_instance_parent_dir(self):
-        """Папка, в которой cmd-launcher ищет/создаёт инстансы."""
+        """Папка, в которой cmd-launcher хранит инстансы: root_dir/Minecraft"""
         return os.path.join(self.root_dir, "Minecraft")
-
     # ---------- работа с конфигурацией ----------
     def load_or_create_config(self):
         config = {}
@@ -123,7 +129,11 @@ class UpdaterApp(tk.Tk):
                     f"Не удалось прочитать файл настроек:\n{e}\nБудут использованы значения по умолчанию.",
                 )
 
-        # Проверяем наличие всех ключей; если нет – показываем диалог
+        # Если нет ключа selected_categories, выбираем все
+        if "selected_categories" not in config:
+            config["selected_categories"] = [local for local, _ in CATEGORIES.values()]
+
+        # Если отсутствуют основные ключи – диалог
         if not all(k in config for k in ("root_dir", "public_url", "nickname")):
             config_dialog = self.request_config_dialog(
                 config.get("root_dir", DEFAULT_ROOT_DIR),
@@ -134,16 +144,24 @@ class UpdaterApp(tk.Tk):
                 config_dialog["root_dir"],
                 config_dialog["public_url"],
                 config_dialog["nickname"],
+                config["selected_categories"]
             )
-            return config_dialog["root_dir"], config_dialog["public_url"], config_dialog["nickname"]
+            return (config_dialog["root_dir"],
+                    config_dialog["public_url"],
+                    config_dialog["nickname"],
+                    config["selected_categories"])
 
-        return config["root_dir"], config["public_url"], config["nickname"]
+        return (config["root_dir"],
+                config["public_url"],
+                config["nickname"],
+                config["selected_categories"])
 
-    def save_config(self, root_dir, public_url, nickname):
+    def save_config(self, root_dir, public_url, nickname, selected_categories=None):
         config = {
             "root_dir": root_dir,
             "public_url": public_url,
             "nickname": nickname,
+            "selected_categories": selected_categories if selected_categories is not None else self.selected_categories
         }
         try:
             with open(self.config_path, "w", encoding="utf-8") as f:
@@ -234,10 +252,10 @@ class UpdaterApp(tk.Tk):
         )
         frame_checks.pack(fill="x", padx=20, pady=5)
 
-        for name, path in CATEGORIES.items():
-            var = tk.BooleanVar(value=True)
-            self.checkbox_vars[path] = var
-            chk = tk.Checkbutton(frame_checks, text=name, variable=var, font=("Arial", 10))
+        for ui_name, (local_path, _) in CATEGORIES.items():
+            var = tk.BooleanVar(value=local_path in self.selected_categories)
+            self.checkbox_vars[local_path] = var
+            chk = tk.Checkbutton(frame_checks, text=ui_name, variable=var, font=("Arial", 10))
             chk.pack(anchor="w", pady=2)
 
         self.progress = ttk.Progressbar(
@@ -261,7 +279,7 @@ class UpdaterApp(tk.Tk):
         self.btn_launch.pack(side="left", padx=10)
         self.btn_sync = tk.Button(
             frame_top,
-            text="Обновить моды",
+            text="Обновить компоненты",
             command=self.start_sync_thread,
             bg="#2196F3",
             fg="white",
@@ -348,18 +366,10 @@ class UpdaterApp(tk.Tk):
 
     # ---------- Проверка и установка инстанса ----------
     def is_instance_installed(self):
-        """
-        Проверяет, что инстанс установлен: существует папка Sex3 и в ней есть instance.json.
-        (cmd-launcher создаёт instance.json после успешной установки).
-        """
         minecraft_dir = self.get_minecraft_dir()
         return os.path.isdir(minecraft_dir) and os.path.isfile(os.path.join(minecraft_dir, "instance.json"))
 
     def launch_minecraft(self):
-        """
-        Нажата кнопка «Запустить Minecraft».
-        Проверяем наличие инстанса; если нет – предлагаем установить или сменить папку.
-        """
         self.btn_launch.config(state=tk.DISABLED)
 
         if self.is_instance_installed():
@@ -380,15 +390,14 @@ class UpdaterApp(tk.Tk):
         if not self._install_instance():
             self.after(0, lambda: self.btn_launch.config(state=tk.NORMAL))
             return
-        self._launch_minecraft_thread()
+        # Первый запуск – синхронизируем все категории
+        all_local = [local for local, _ in CATEGORIES.values()]
+        success, _, _ = self.sync_process(all_local, silent=True)
+        if not success:
+            self.after(0, lambda: messagebox.showwarning("Ошибка", "Синхронизация завершилась с ошибками.\nПроверьте логи."))
+        self._launch_game()
 
     def _install_instance(self):
-        """
-        Создаёт инстанс Sex3 через cmd-launcher.
-        Если инстанс уже существует (cmd-launcher сообщает 'already exists'), считаем это успехом.
-        Ничего не удаляем.
-        Возвращает True при успехе или если инстанс уже есть.
-        """
         parent_dir = self.get_instance_parent_dir()
         os.makedirs(parent_dir, exist_ok=True)
 
@@ -429,20 +438,19 @@ class UpdaterApp(tk.Tk):
             return False
 
     def _launch_minecraft_thread(self):
-        """Выполняет синхронизацию модов и запуск игры (инстанс уже есть)."""
-        try:
-            success, _, _ = self.sync_process(["mods"], silent=True)
-            if not success:
-                self.after(0, lambda: [
-                    messagebox.showwarning("Ошибка", "Синхронизация модов завершилась с ошибками.\nПроверьте логи."),
-                ])
-                return
+        """Обычный запуск: синхронизируем только выбранные категории."""
+        selected_local = [local for local, var in self.checkbox_vars.items() if var.get()]
+        if not selected_local:
             self.after(0, self._launch_game)
-        finally:
             self.after(0, lambda: self.btn_launch.config(state=tk.NORMAL))
+            return
+        success, _, _ = self.sync_process(selected_local, silent=True)
+        if not success:
+            self.after(0, lambda: messagebox.showwarning("Ошибка", "Синхронизация завершилась с ошибками.\nПроверьте логи."))
+        self._launch_game()
+        self.after(0, lambda: self.btn_launch.config(state=tk.NORMAL))
 
     def _launch_game(self):
-        """Запускает Minecraft через cmd-launcher с заданным ником."""
         nick = self.nickname.strip()
         if not nick:
             messagebox.showwarning("Ошибка", "Не указан игровой никнейм в настройках.")
@@ -460,6 +468,11 @@ class UpdaterApp(tk.Tk):
             "--dir", parent_dir,
             f"--jvm-args={JVM_FLAGS}",
         ]
+        # Добавляем сервер, если указан в конфиге
+        server = LAUNCHER_CONFIG.get("server", "")
+        if server:
+            args.extend(["--server", server])
+
         self.log_message(f"[ЗАПУСК] {' '.join(args)}")
         try:
             subprocess.Popen(args, cwd=parent_dir, close_fds=True)
@@ -467,30 +480,30 @@ class UpdaterApp(tk.Tk):
             self.log_error("Запуск", f"Не удалось запустить игру: {e}")
             messagebox.showerror("Ошибка", "Не удалось запустить Minecraft. Проверьте логи.")
 
-    # ---------- Синхронизация (только добавление/обновление, без удаления) ----------
+    # ---------- Синхронизация (только загрузка, без удаления) ----------
     def start_sync_thread(self):
-        selected_paths = [path for path, var in self.checkbox_vars.items() if var.get()]
-        if not selected_paths:
-            messagebox.showwarning("Внимание", "Выберите компоненты для скачивания!")
+        selected_local = [local for local, var in self.checkbox_vars.items() if var.get()]
+        if not selected_local:
+            messagebox.showwarning("Внимание", "Выберите хотя бы один компонент для скачивания!")
             return
 
         self.btn_sync.config(state=tk.DISABLED)
         self.progress["value"] = 0
         threading.Thread(
-            target=self._sync_thread_worker, args=(selected_paths,), daemon=True
+            target=self._sync_thread_worker, args=(selected_local,), daemon=True
         ).start()
 
-    def _sync_thread_worker(self, selected_paths):
+    def _sync_thread_worker(self, selected_local):
         try:
-            self.sync_process(selected_paths, silent=False)
+            self.sync_process(selected_local, silent=False)
         finally:
             self.after(0, lambda: self.btn_sync.config(state=tk.NORMAL))
+            self.save_config(self.root_dir, self.public_url, self.nickname)
 
-    def sync_process(self, selected_paths, silent=False):
+    def sync_process(self, selected_local_paths, silent=False):
         """
         Синхронизация: скачивает недостающие и изменившиеся файлы из облака.
-        Удаление локальных файлов не производится.
-        Возвращает (success, downloaded, deleted).
+        selected_local_paths – список локальных путей (например, "mods", "config").
         """
         minecraft_dir = self.get_minecraft_dir()
         self.after(0, self.log_message, f"[СТАРТ] Назначена папка сборки: {minecraft_dir}")
@@ -507,21 +520,36 @@ class UpdaterApp(tk.Tk):
         has_errors = False
 
         self.after(0, self.log_message, "\n--- ЭТАП 1: Получение структуры файлов ---")
-        for path in selected_paths:
-            cloud_files, success = self.get_yandex_folder_structure(self.public_key, path)
+        for local_path in selected_local_paths:
+            # Ищем соответствующую облачную папку
+            cloud_folder = None
+            for ui, (lpath, cpath) in CATEGORIES.items():
+                if lpath == local_path:
+                    cloud_folder = cpath
+                    break
+            if not cloud_folder:
+                continue
+
+            cloud_files, success = self.get_yandex_folder_structure(self.public_key, cloud_folder)
             if not success:
-                self.after(0, self.log_error, "Синхронизация", f"Пропуск категории '{path}' из-за ошибки доступа к облаку.")
+                self.after(0, self.log_error, "Синхронизация", f"Пропуск категории '{local_path}' из-за ошибки доступа к облаку.")
                 has_errors = True
                 continue
 
-            local_files = self.get_local_files(minecraft_dir, path)
+            local_files = self.get_local_files(minecraft_dir, local_path)
 
             for cloud_rel_path, (download_url, cloud_size) in cloud_files.items():
-                if cloud_rel_path not in local_files:
-                    total_actions.append(("download", cloud_rel_path, download_url))
-                elif local_files[cloud_rel_path] != cloud_size:
-                    self.after(0, self.log_message, f"[ОБНОВЛЕНИЕ] Изменился размер файла: {cloud_rel_path}")
-                    total_actions.append(("download", cloud_rel_path, download_url))
+                # cloud_rel_path: "mods/SomeMod.jar" → локальный: "mods/SomeMod.jar" (т.к. local_path == "mods")
+                if cloud_rel_path.startswith(cloud_folder + "/"):
+                    local_rel = local_path + cloud_rel_path[len(cloud_folder):]
+                else:
+                    local_rel = local_path + "/" + cloud_rel_path.split("/", 1)[-1]
+
+                if local_rel not in local_files:
+                    total_actions.append(("download", local_rel, download_url))
+                elif local_files[local_rel] != cloud_size:
+                    self.after(0, self.log_message, f"[ОБНОВЛЕНИЕ] Изменился размер файла: {local_rel}")
+                    total_actions.append(("download", local_rel, download_url))
 
         if has_errors and not total_actions:
             self.after(0, self.log_message, "\n⚠️ [ЗАВЕРШЕНО С ОШИБКАМИ] Не удалось получить данные из облака.")
@@ -694,40 +722,36 @@ if __name__ == "__main__":
     if "--headless" in sys.argv:
         # Запуск без UI
         print("[INFO] Headless mode started")
-        # Создаём приложение, но не запускаем главный цикл
         app = UpdaterApp()
-        app.withdraw()  # скрываем главное окно
+        app.withdraw()
 
-        # Переопределяем методы логирования на консольный вывод
+        def immediate_after(ms, func, *args):
+            func(*args)
+        app.after = immediate_after
+        app.update_gui_progress = lambda p: None
+
         def log_headless(msg):
             print(msg)
         app.log_message = log_headless
         app.log_error = lambda ctx, msg: print(f"ERROR [{ctx}] {msg}")
 
-        # Переопределяем messagebox, чтобы не показывать окна
-        def silent_error(title, msg):
-            print(f"ERROR {title}: {msg}")
-        tk.messagebox.showinfo = silent_error
-        tk.messagebox.showerror = silent_error
-        tk.messagebox.showwarning = silent_error
-        tk.messagebox.askyesno = lambda title, msg: False  # по умолчанию "Нет"
+        tk.messagebox.showinfo = lambda title, msg: print(f"INFO {title}: {msg}")
+        tk.messagebox.showerror = lambda title, msg: print(f"ERROR {title}: {msg}")
+        tk.messagebox.showwarning = lambda title, msg: print(f"WARNING {title}: {msg}")
+        tk.messagebox.askyesno = lambda title, msg: False
 
-        # Проверяем, установлен ли инстанс
         if not app.is_instance_installed():
-            # Пытаемся установить
             if not app._install_instance():
                 print("FATAL: Cannot install Minecraft instance.")
                 sys.exit(1)
 
-        # Запускаем синхронизацию модов и игру (без GUI-потоков, можно использовать тот же метод)
-        # Так как app.launch_minecraft запускает поток с after и messagebox, проще вызвать напрямую
-        # нужную цепочку в текущем потоке с блокировкой.
-        success, _, _ = app.sync_process(["mods"], silent=True)
+        # Headless синхронизирует все категории
+        all_local = [local for local, _ in CATEGORIES.values()]
+        success, _, _ = app.sync_process(all_local, silent=True)
         if not success:
-            print("WARNING: Mod sync had errors, but launching anyway.")
-        
+            print("WARNING: Sync had errors, but launching anyway.")
+
         app._launch_game()
-        # Даём игре немного времени на старт, затем выходим
         sys.exit(0)
     else:
         app = UpdaterApp()
