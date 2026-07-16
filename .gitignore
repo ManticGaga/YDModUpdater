@@ -1,0 +1,16 @@
+# Игнорируем папку с игрой (инстансы и прочее)
+/Minecraft/
+/minecraft/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.dll
+*.pyd
+*.pyo
+
+# Временные файлы
+*.tmp
+*.temp
+*.log
