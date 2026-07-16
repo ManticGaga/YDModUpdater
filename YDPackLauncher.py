@@ -38,7 +38,7 @@ DEFAULT_CONFIG = {
     "public_url": "https://disk.yandex.ru/d/tenAj8XlAQEPXA",
     "nickname": "ManticGaga",
     "server": "",
-    "instance_dir": ""  # пользователь должен указать
+    "instance_name": "Sex3"   # имя папки инстанса внутри Minecraft/instances/
 }
 
 def load_config():
@@ -54,7 +54,7 @@ def load_config():
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             config = json.load(f)
-        # Заполняем отсутствующие ключи
+        # Добавляем отсутствующие ключи
         for key, value in DEFAULT_CONFIG.items():
             if key not in config:
                 config[key] = value
@@ -78,13 +78,7 @@ JVM_FLAGS = CONFIG["jvm_flags"]
 PUBLIC_URL = CONFIG["public_url"]
 NICKNAME = CONFIG["nickname"]
 SERVER = CONFIG.get("server", "")
-INSTANCE_DIR = CONFIG.get("instance_dir", "")
 
-# Нормализуем путь, если он есть
-if INSTANCE_DIR:
-    INSTANCE_DIR = os.path.normpath(INSTANCE_DIR)
-
-# Если instance_dir не задан, открываем диалог при старте
 # ================================================================================
 
 CATEGORIES = {
@@ -118,36 +112,35 @@ class UpdaterApp(tk.Tk):
         else:
             self.base_path = os.path.dirname(os.path.abspath(__file__))
 
-        self.config = load_config()  # загружаем свежий конфиг
-        self.instance_dir = self.config.get("instance_dir", "")
+        self.config = load_config()
+        # Корневая папка Minecraft (где лежат папки instances, libraries, versions)
+        self.minecraft_root = os.path.join(self.base_path, "Minecraft")
+        # Имя инстанса
+        self.instance_name = self.config.get("instance_name", "Sex3")
+        # Полный путь к папке инстанса
+        self.instance_dir = os.path.join(self.minecraft_root, "instances", self.instance_name)
         self.public_url = self.config.get("public_url", PUBLIC_URL)
         self.nickname = self.config.get("nickname", NICKNAME)
         self.public_key = resolve_public_key(self.public_url)
 
-        # Если instance_dir не задан или не существует – открываем настройки
-        if not self.instance_dir or not os.path.isdir(self.instance_dir):
-            self.after(100, self.open_settings)  # открываем диалог после загрузки окна
-
         self.create_widgets()
 
-    # ---------- Вспомогательные методы для работы с инстансом ----------
+    # ---------- Вспомогательные методы ----------
     def get_instance_dir(self):
-        return os.path.normpath(self.instance_dir) if self.instance_dir else ""
+        return self.instance_dir
 
     def get_instance_parent_dir(self):
-        inst = self.get_instance_dir()
-        return os.path.dirname(inst) if inst else ""
+        # Родительская папка инстанса = корень Minecraft
+        return self.minecraft_root
 
     def get_instance_name(self):
-        inst = self.get_instance_dir()
-        return os.path.basename(inst) if inst else ""
+        return self.instance_name
 
     # ---------- Сохранение конфига ----------
     def save_config(self):
-        self.config["instance_dir"] = self.instance_dir
         self.config["public_url"] = self.public_url
         self.config["nickname"] = self.nickname
-        # Обновляем глобальные флаги
+        self.config["instance_name"] = self.instance_name
         global JVM_FLAGS, SERVER
         self.config["jvm_flags"] = JVM_FLAGS
         self.config["server"] = SERVER
@@ -333,10 +326,7 @@ class UpdaterApp(tk.Tk):
         self.log_message("[СИСТЕМА] Инициализация завершена. Готов к работе.")
         self.log_message(f"[СИСТЕМА] Используется публичный ключ: {self.public_key}")
         inst = self.get_instance_dir()
-        if inst:
-            self.log_message(f"[СИСТЕМА] Папка инстанса: {inst}")
-        else:
-            self.log_message("[СИСТЕМА] Папка инстанса не задана (настройте в Настройках)")
+        self.log_message(f"[СИСТЕМА] Папка инстанса: {inst}")
         self.log_message(f"[СИСТЕМА] JVM флаги: {JVM_FLAGS}")
 
     def update_jvm_ui(self):
@@ -468,50 +458,31 @@ class UpdaterApp(tk.Tk):
             messagebox.showerror("Ошибка", f"Ошибка при обновлении: {e}")
             self.btn_update_launcher.config(state=tk.NORMAL)
 
-    # ---------- ДИАЛОГ НАСТРОЕК ----------
+    # ---------- ДИАЛОГ НАСТРОЕК (с выбором имени инстанса) ----------
     def open_settings(self):
-        global JVM_FLAGS, SERVER    
+        global JVM_FLAGS, SERVER
         dialog = tk.Toplevel(self)
         dialog.title("Настройки")
-        dialog.geometry("650x500")
+        dialog.geometry("650x450")
         dialog.resizable(False, False)
         dialog.grab_set()
 
-        current_instance = self.get_instance_dir()
         current_url = self.public_url
         current_nick = self.nickname
         current_jvm = JVM_FLAGS
         current_server = SERVER
+        current_instance_name = self.instance_name
 
         result = {
-            "instance_dir": current_instance,
             "public_url": current_url,
             "nickname": current_nick,
             "jvm_flags": current_jvm,
             "server": current_server,
+            "instance_name": current_instance_name,
         }
 
         row = 0
-        tk.Label(dialog, text="Папка инстанса (полный путь, где лежат instance.json, mods, config):").grid(
-            row=row, column=0, sticky="w", padx=10, pady=(15, 0), columnspan=2
-        )
-        row += 1
-        dir_var = tk.StringVar(value=result["instance_dir"])
-        entry_dir = tk.Entry(dialog, textvariable=dir_var, width=55)
-        entry_dir.grid(row=row, column=0, padx=(10, 5), pady=5, sticky="we")
-
-        def browse_folder():
-            path = filedialog.askdirectory(
-                title="Выберите папку инстанса",
-                initialdir=dir_var.get() if dir_var.get() else "",
-            )
-            if path:
-                dir_var.set(os.path.normpath(path))
-
-        btn_browse = tk.Button(dialog, text="Обзор...", command=browse_folder)
-        btn_browse.grid(row=row, column=1, padx=(0, 10), pady=5)
-        row += 1
-
+        # Публичная ссылка
         tk.Label(dialog, text="Публичная ссылка Яндекс.Диска:").grid(
             row=row, column=0, sticky="w", padx=10, pady=(15, 0), columnspan=2
         )
@@ -521,6 +492,7 @@ class UpdaterApp(tk.Tk):
         entry_url.grid(row=row, column=0, padx=(10, 5), pady=5, sticky="we", columnspan=2)
         row += 1
 
+        # Никнейм
         tk.Label(dialog, text="Игровой никнейм:").grid(
             row=row, column=0, sticky="w", padx=10, pady=(15, 0), columnspan=2
         )
@@ -530,6 +502,17 @@ class UpdaterApp(tk.Tk):
         entry_nick.grid(row=row, column=0, padx=(10, 5), pady=5, sticky="we", columnspan=2)
         row += 1
 
+        # Имя инстанса
+        tk.Label(dialog, text="Имя папки инстанса (внутри Minecraft/instances/):").grid(
+            row=row, column=0, sticky="w", padx=10, pady=(15, 0), columnspan=2
+        )
+        row += 1
+        inst_name_var = tk.StringVar(value=result["instance_name"])
+        entry_inst_name = tk.Entry(dialog, textvariable=inst_name_var, width=55)
+        entry_inst_name.grid(row=row, column=0, padx=(10, 5), pady=5, sticky="we", columnspan=2)
+        row += 1
+
+        # JVM аргументы
         tk.Label(dialog, text="JVM аргументы (флаги запуска):").grid(
             row=row, column=0, sticky="w", padx=10, pady=(15, 0), columnspan=2
         )
@@ -539,6 +522,7 @@ class UpdaterApp(tk.Tk):
         entry_jvm.grid(row=row, column=0, padx=(10, 5), pady=5, sticky="we", columnspan=2)
         row += 1
 
+        # Сервер
         tk.Label(dialog, text="Сервер для автоматического подключения (IP:port, необязательно):").grid(
             row=row, column=0, sticky="w", padx=10, pady=(15, 0), columnspan=2
         )
@@ -549,23 +533,23 @@ class UpdaterApp(tk.Tk):
         row += 1
 
         def on_save():
-            inst = os.path.normpath(dir_var.get().strip())
-            if not inst:
-                messagebox.showwarning("Ошибка", "Путь к инстансу не может быть пустым.")
+            new_name = inst_name_var.get().strip()
+            if not new_name:
+                messagebox.showwarning("Ошибка", "Имя инстанса не может быть пустым.")
                 return
-            result["instance_dir"] = inst
             result["public_url"] = url_var.get().strip()
             result["nickname"] = nick_var.get().strip()
             result["jvm_flags"] = jvm_var.get().strip()
             result["server"] = server_var.get().strip()
+            result["instance_name"] = new_name
             dialog.destroy()
 
         def on_default():
-            dir_var.set("")
             url_var.set(DEFAULT_CONFIG["public_url"])
             nick_var.set(DEFAULT_CONFIG["nickname"])
             jvm_var.set(DEFAULT_CONFIG["jvm_flags"])
             server_var.set("")
+            inst_name_var.set("Sex3")
 
         frame_btns = tk.Frame(dialog)
         frame_btns.grid(row=row, column=0, columnspan=2, pady=15)
@@ -575,20 +559,20 @@ class UpdaterApp(tk.Tk):
         self.wait_window(dialog)
 
         # Применяем изменения
-        if result["instance_dir"]:
-            self.instance_dir = result["instance_dir"]
-            self.public_url = result["public_url"]
-            self.nickname = result["nickname"]
-            JVM_FLAGS = result["jvm_flags"]
-            SERVER = result["server"]
-            self.public_key = resolve_public_key(self.public_url)
-            self.save_config()
-            self.update_jvm_ui()
-            self.log_message("[СИСТЕМА] Настройки обновлены.")
-            messagebox.showinfo(
-                "Настройки",
-                "Настройки сохранены. Новые параметры будут использованы при следующем запуске.",
-            )
+        self.public_url = result["public_url"]
+        self.nickname = result["nickname"]
+        JVM_FLAGS = result["jvm_flags"]
+        SERVER = result["server"]
+        self.instance_name = result["instance_name"]
+        # Пересчитываем путь к инстансу
+        self.instance_dir = os.path.join(self.minecraft_root, "instances", self.instance_name)
+        self.public_key = resolve_public_key(self.public_url)
+        self.save_config()
+        self.update_jvm_ui()
+        self.log_message("[СИСТЕМА] Настройки обновлены.")
+        self.log_message(f"[СИСТЕМА] Новое имя инстанса: {self.instance_name}")
+        self.log_message(f"[СИСТЕМА] Новый путь: {self.instance_dir}")
+        messagebox.showinfo("Настройки", "Настройки сохранены. Инстанс будет использоваться при следующем запуске.")
 
     def log_message(self, message):
         self.txt_log.insert(tk.END, message + "\n")
@@ -609,15 +593,9 @@ class UpdaterApp(tk.Tk):
     # ---------- Проверка и установка инстанса ----------
     def is_instance_installed(self):
         inst = self.get_instance_dir()
-        if not inst:
-            return False
         return os.path.isdir(inst) and os.path.isfile(os.path.join(inst, "instance.json"))
 
     def launch_minecraft(self):
-        if not self.get_instance_dir():
-            self.open_settings()
-            return
-
         self.btn_launch.config(state=tk.DISABLED)
         threading.Thread(target=self._launch_thread, daemon=True).start()
 
@@ -627,7 +605,6 @@ class UpdaterApp(tk.Tk):
             if not self._install_instance():
                 self.after(0, self.btn_launch.config, state=tk.NORMAL)
                 return
-            # После установки синхронизируем моды
             success, _, _ = self.sync_process(silent=True)
             if not success:
                 self.after(0, lambda: messagebox.showwarning("Ошибка", "Синхронизация модов завершилась с ошибками.\nПроверьте логи."))
@@ -642,7 +619,7 @@ class UpdaterApp(tk.Tk):
             return False
 
         os.makedirs(parent_dir, exist_ok=True)
-        os.makedirs(os.path.join(parent_dir, instance_name), exist_ok=True)
+        os.makedirs(os.path.join(parent_dir, "instances", instance_name), exist_ok=True)
 
         cmd = os.path.join(self.base_path, "cmd-launcher.exe")
         if not os.path.isfile(cmd):
@@ -715,10 +692,6 @@ class UpdaterApp(tk.Tk):
 
     # ---------- СИНХРОНИЗАЦИЯ МОДОВ (с удалением) ----------
     def start_sync_thread(self):
-        if not self.get_instance_dir():
-            self.open_settings()
-            return
-
         self.btn_sync.config(state=tk.DISABLED)
         self.progress["value"] = 0
         threading.Thread(
@@ -881,10 +854,6 @@ class UpdaterApp(tk.Tk):
 
     # ---------- УСТАНОВКА ДОП. ФАЙЛОВ ----------
     def choose_additional_item(self):
-        if not self.get_instance_dir():
-            self.open_settings()
-            return
-
         items, ok = self.list_public_folder(self.public_key, None)
         if not ok:
             messagebox.showerror("Ошибка", "Не удалось получить список элементов в корне облака.")

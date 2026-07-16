@@ -6,7 +6,7 @@ setlocal enabledelayedexpansion
 ::  БАТ-ФАЙЛ ДЛЯ СБОРКИ .PY → .EXE (PyInstaller)
 :: ================================================================
 ::  1. Укажите имя вашего основного скрипта (без .py):
-set SCRIPT_NAME=MinecraftLauncherScript
+set SCRIPT_NAME=YDPackLauncher
 
 ::  2. Выберите режим:
 ::     console  – показать консольное окно (для отладки)
