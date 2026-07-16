@@ -3,8 +3,8 @@
   "loader": "neoforge",
   "loader_version": "21.1.228",
   "jvm_flags": "-Xms128M -Xmx8755M -XX:+UseG1GC -XX:G1HeapRegionSize=16M -XX:G1ReservePercent=20 -XX:MaxGCPauseMillis=50 -XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:+PerfDisableSharedMem -Dusing.aikars.flags=https://emc.gs -Daikars.new.flags=true -Duser.timezone=Europe/Moscow -Dfile.encoding=UTF-8",
-  "default_public_url": "https://disk.yandex.ru/d/tenAj8XlAQEPXA",
-  "default_nickname": "ManticGaga",
+  "public_url": "https://disk.yandex.ru/d/tenAj8XlAQEPXA",
+  "nickname": "ManticGaga",
   "server": "",
   "instance_dir": "D:\\Minecraft\\Launcher\\Minecraft\\instances\\Sex"
 }
