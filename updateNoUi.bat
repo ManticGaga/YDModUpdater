@@ -1,2 +1,0 @@
-python sync_mods_config_nogui.py
-pause
