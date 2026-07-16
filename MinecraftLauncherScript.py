@@ -7,8 +7,18 @@ import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import zipfile
+import re
+import tempfile
 
 import requests
+
+# Попытка импорта psutil для информации о памяти
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
+    print("[WARN] psutil not installed. Memory info will be unavailable.")
 
 # ================= КОНФИГУРАЦИЯ ЗАПУСКА (launcher_config.json) =================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.path.dirname(sys.executable)
@@ -19,10 +29,11 @@ DEFAULT_LAUNCHER_CONFIG = {
     "loader": "neoforge",
     "loader_version": "21.1.228",
     "jvm_flags": (
-        "-Xms128M -Xmx8755M -XX:+UnlockExperimentalVMOptions -XX:+UseZGC "
-        "-XX:ZAllocationSpikeTolerance=5 -XX:+AlwaysPreTouch -XX:+DisableExplicitGC "
-        "-XX:+PerfDisableSharedMem -Dusing.aikars.flags=https://emc.gs -Daikars.new.flags=true "
-        "-Duser.timezone=Europe/Moscow -Dfile.encoding=UTF-8"
+        "-Xms128M -Xmx8755M -XX:+UseG1GC -XX:G1HeapRegionSize=16M "
+        "-XX:G1ReservePercent=20 -XX:MaxGCPauseMillis=50 "
+        "-XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC "
+        "-XX:+PerfDisableSharedMem -Dusing.aikars.flags=https://emc.gs "
+        "-Daikars.new.flags=true -Duser.timezone=Europe/Moscow -Dfile.encoding=UTF-8"
     ),
     "default_public_url": "https://disk.yandex.ru/d/tenAj8XlAQEPXA",
     "default_nickname": "ManticGaga",
@@ -73,6 +84,10 @@ HEADERS = {
                   "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
+# GitHub параметры (замените на свои)
+GITHUB_OWNER = "ManticGaga"           # <-- замените на ваш GitHub username
+GITHUB_REPO = "YDModUpdater"  # <-- замените на название репозитория
+
 def resolve_public_key(url_or_key):
     if not url_or_key:
         return ""
@@ -83,8 +98,8 @@ class UpdaterApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Minecraft Modpack Updater")
-        self.geometry("750x600")
-        self.minsize(700, 500)
+        self.geometry("850x700")
+        self.minsize(800, 600)
 
         if getattr(sys, 'frozen', False):
             self.base_path = os.path.dirname(sys.executable)
@@ -96,10 +111,9 @@ class UpdaterApp(tk.Tk):
         (self.root_dir,
          self.public_url,
          self.nickname,
-         self.selected_categories) = self.load_or_create_config()
+         _) = self.load_or_create_config()
         self.public_key = resolve_public_key(self.public_url)
 
-        self.checkbox_vars = {}
         self.create_widgets()
 
     # ---------- Вспомогательные пути ----------
@@ -123,7 +137,7 @@ class UpdaterApp(tk.Tk):
                 )
 
         if "selected_categories" not in config:
-            config["selected_categories"] = [local for local, _ in CATEGORIES.values()]
+            config["selected_categories"] = ["mods"]
 
         if not all(k in config for k in ("root_dir", "public_url", "nickname")):
             config_dialog = self.request_config_dialog(
@@ -135,7 +149,7 @@ class UpdaterApp(tk.Tk):
                 config_dialog["root_dir"],
                 config_dialog["public_url"],
                 config_dialog["nickname"],
-                config["selected_categories"]
+                ["mods"]
             )
             global JVM_FLAGS, SERVER_ADDRESS
             JVM_FLAGS = config_dialog.get("jvm_flags", JVM_FLAGS)
@@ -144,12 +158,12 @@ class UpdaterApp(tk.Tk):
             return (config_dialog["root_dir"],
                     config_dialog["public_url"],
                     config_dialog["nickname"],
-                    config["selected_categories"])
+                    ["mods"])
 
         return (config["root_dir"],
                 config["public_url"],
                 config["nickname"],
-                config["selected_categories"])
+                ["mods"])
 
     def _save_launcher_config(self, jvm_flags, nickname, server):
         try:
@@ -171,7 +185,7 @@ class UpdaterApp(tk.Tk):
             "root_dir": root_dir,
             "public_url": public_url,
             "nickname": nickname,
-            "selected_categories": selected_categories if selected_categories is not None else self.selected_categories
+            "selected_categories": ["mods"]
         }
         try:
             with open(self.config_path, "w", encoding="utf-8") as f:
@@ -287,27 +301,29 @@ class UpdaterApp(tk.Tk):
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         # Левый столбец
-        left_frame = tk.Frame(main_frame, width=250)
+        left_frame = tk.Frame(main_frame, width=300)
         left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 10))
         left_frame.pack_propagate(False)
 
         # Заголовок
-        lbl_title = tk.Label(left_frame, text="Синхронизация сборки", font=("Arial", 14, "bold"))
+        lbl_title = tk.Label(left_frame, text="Управление сборкой", font=("Arial", 14, "bold"))
         lbl_title.pack(pady=(0, 10))
 
-        # Чекбокс
-        frame_checks = tk.LabelFrame(left_frame, text=" Компоненты ", padx=10, pady=5)
-        frame_checks.pack(fill=tk.X, pady=5)
-        for ui_name, (local_path, _) in CATEGORIES.items():
-            var = tk.BooleanVar(value=local_path in self.selected_categories)
-            self.checkbox_vars[local_path] = var
-            var.trace('w', lambda *args, lp=local_path: self._on_checkbox_change(lp))
-            chk = tk.Checkbutton(frame_checks, text=ui_name, variable=var, font=("Arial", 10))
-            chk.pack(anchor="w", pady=2)
-
-        # Кнопки
+        # Кнопки (вертикально)
         btn_frame = tk.Frame(left_frame)
         btn_frame.pack(fill=tk.X, pady=5)
+
+        self.btn_launch = tk.Button(
+            btn_frame,
+            text="Запустить Minecraft",
+            command=self.launch_minecraft,
+            bg="#4CAF50",
+            fg="white",
+            font=("Arial", 11, "bold"),
+            padx=10,
+            pady=5,
+        )
+        self.btn_launch.pack(fill=tk.X, pady=2)
 
         self.btn_sync = tk.Button(
             btn_frame,
@@ -333,30 +349,6 @@ class UpdaterApp(tk.Tk):
         )
         self.btn_config_install.pack(fill=tk.X, pady=2)
 
-        self.btn_launch = tk.Button(
-            btn_frame,
-            text="Запустить Minecraft",
-            command=self.launch_minecraft,
-            bg="#4CAF50",
-            fg="white",
-            font=("Arial", 11, "bold"),
-            padx=10,
-            pady=5,
-        )
-        self.btn_launch.pack(fill=tk.X, pady=2)
-
-        self.btn_diag = tk.Button(
-            btn_frame,
-            text="Диагностика облака",
-            command=self.start_debug_thread,
-            bg="#9E9E9E",
-            fg="white",
-            font=("Arial", 11),
-            padx=10,
-            pady=5,
-        )
-        self.btn_diag.pack(fill=tk.X, pady=2)
-
         self.btn_settings = tk.Button(
             btn_frame,
             text="Настройки",
@@ -369,9 +361,91 @@ class UpdaterApp(tk.Tk):
         )
         self.btn_settings.pack(fill=tk.X, pady=2)
 
+        # Кнопка обновления лаунчера
+        self.btn_update_launcher = tk.Button(
+            btn_frame,
+            text="Обновить лаунчер",
+            command=self.check_for_updates,
+            bg="#9C27B0",
+            fg="white",
+            font=("Arial", 11),
+            padx=10,
+            pady=5,
+        )
+        self.btn_update_launcher.pack(fill=tk.X, pady=2)
+
         # Прогресс-бар
         self.progress = ttk.Progressbar(left_frame, orient="horizontal", length=200, mode="determinate")
         self.progress.pack(fill=tk.X, pady=10)
+
+        # ---- Блок информации о памяти и JVM ----
+        jvm_frame = tk.LabelFrame(left_frame, text="Настройки JVM", padx=5, pady=5)
+        jvm_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        # Информация о системной памяти (одна строка с сокращениями)
+        self.mem_label = tk.Label(jvm_frame, text="", font=("Arial", 9), anchor="w", justify=tk.LEFT)
+        self.mem_label.pack(fill=tk.X, pady=2)
+
+        # Поля Xms и Xmx вертикально
+        # Xms
+        xms_frame = tk.Frame(jvm_frame)
+        xms_frame.pack(fill=tk.X, pady=2)
+        tk.Label(xms_frame, text="Min RAM (Xms):", font=("Arial", 9), width=14, anchor="w").pack(side=tk.LEFT)
+        self.xms_var = tk.StringVar()
+        self.xms_entry = tk.Entry(xms_frame, textvariable=self.xms_var, width=8)
+        self.xms_entry.pack(side=tk.LEFT, padx=(0, 5))
+        tk.Label(xms_frame, text="MB", font=("Arial", 9)).pack(side=tk.LEFT)
+
+        # Xmx
+        xmx_frame = tk.Frame(jvm_frame)
+        xmx_frame.pack(fill=tk.X, pady=2)
+        tk.Label(xmx_frame, text="Max RAM (Xmx):", font=("Arial", 9), width=14, anchor="w").pack(side=tk.LEFT)
+        self.xmx_var = tk.StringVar()
+        self.xmx_entry = tk.Entry(xmx_frame, textvariable=self.xmx_var, width=8)
+        self.xmx_entry.pack(side=tk.LEFT, padx=(0, 5))
+        tk.Label(xmx_frame, text="MB", font=("Arial", 9)).pack(side=tk.LEFT)
+
+        # Поле для остальных JVM-аргументов (с прокруткой)
+        tk.Label(jvm_frame, text="Дополнительные аргументы:", font=("Arial", 9), anchor="w").pack(fill=tk.X, pady=(5, 0))
+        self.jvm_text_frame = tk.Frame(jvm_frame)
+        self.jvm_text_frame.pack(fill=tk.BOTH, expand=True, pady=2)
+
+        self.jvm_text = tk.Text(self.jvm_text_frame, height=4, font=("Consolas", 9), wrap=tk.WORD)
+        self.jvm_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        scrollbar = tk.Scrollbar(self.jvm_text_frame, command=self.jvm_text.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.jvm_text.config(yscrollcommand=scrollbar.set)
+
+        # Кнопки "Применить JVM" и "Откатить" рядом
+        btn_jvm_frame = tk.Frame(jvm_frame)
+        btn_jvm_frame.pack(pady=5)
+        self.btn_apply_jvm = tk.Button(
+            btn_jvm_frame,
+            text="Применить JVM",
+            command=self.apply_jvm_changes,
+            bg="#8BC34A",
+            fg="white",
+            font=("Arial", 10),
+            padx=10,
+            pady=3,
+        )
+        self.btn_apply_jvm.pack(side=tk.LEFT, padx=5)
+
+        self.btn_reset_jvm = tk.Button(
+            btn_jvm_frame,
+            text="Откатить",
+            command=self.reset_jvm_to_default,
+            bg="#FFC107",
+            fg="black",
+            font=("Arial", 10),
+            padx=10,
+            pady=3,
+        )
+        self.btn_reset_jvm.pack(side=tk.LEFT, padx=5)
+
+        # Заполняем поля из текущих JVM_FLAGS
+        self.update_jvm_ui()
 
         # Правый столбец
         right_frame = tk.Frame(main_frame)
@@ -383,9 +457,16 @@ class UpdaterApp(tk.Tk):
         )
         self.txt_log.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
 
-        # Кнопка копирования логов
+        # Кнопки под логами (центрированы)
+        bottom_btn_frame = tk.Frame(right_frame)
+        bottom_btn_frame.pack(fill=tk.X, pady=5)
+
+        # Создаём контейнер для центрирования
+        center_frame = tk.Frame(bottom_btn_frame)
+        center_frame.pack(anchor=tk.CENTER)
+
         self.btn_copy = tk.Button(
-            right_frame,
+            center_frame,
             text="Скопировать логи",
             command=self.copy_logs_to_clipboard,
             bg="#607D8B",
@@ -394,20 +475,154 @@ class UpdaterApp(tk.Tk):
             padx=10,
             pady=5,
         )
-        self.btn_copy.pack(pady=5)
+        self.btn_copy.pack(side=tk.LEFT, padx=5)
+
+        self.btn_diag = tk.Button(
+            center_frame,
+            text="Диагностика облака",
+            command=self.start_debug_thread,
+            bg="#9E9E9E",
+            fg="white",
+            font=("Arial", 11),
+            padx=10,
+            pady=5,
+        )
+        self.btn_diag.pack(side=tk.LEFT, padx=5)
 
         self.log_message("[СИСТЕМА] Инициализация завершена. Готов к работе.")
         self.log_message(f"[СИСТЕМА] Используется публичный ключ: {self.public_key}")
+        self.log_message(f"[СИСТЕМА] JVM флаги: {JVM_FLAGS}")
 
-    def _on_checkbox_change(self, local_path):
-        if self.checkbox_vars[local_path].get():
-            if local_path not in self.selected_categories:
-                self.selected_categories.append(local_path)
+    def update_jvm_ui(self):
+        """Обновляет UI-поля на основе глобального JVM_FLAGS."""
+        xms_match = re.search(r'-Xms(\d+)[mM]?', JVM_FLAGS)
+        xmx_match = re.search(r'-Xmx(\d+)[mM]?', JVM_FLAGS)
+        if xms_match:
+            self.xms_var.set(xms_match.group(1))
         else:
-            if local_path in self.selected_categories:
-                self.selected_categories.remove(local_path)
-        self.save_config(self.root_dir, self.public_url, self.nickname, self.selected_categories)
+            self.xms_var.set("")
+        if xmx_match:
+            self.xmx_var.set(xmx_match.group(1))
+        else:
+            self.xmx_var.set("")
 
+        rest = re.sub(r'-Xms\S+\s*', '', JVM_FLAGS)
+        rest = re.sub(r'-Xmx\S+\s*', '', rest)
+        rest = rest.strip()
+        self.jvm_text.delete("1.0", tk.END)
+        self.jvm_text.insert("1.0", rest)
+
+        self.update_memory_info()
+
+    def update_memory_info(self):
+        if HAS_PSUTIL:
+            mem = psutil.virtual_memory()
+            total_gb = mem.total / (1024**3)
+            free_gb = mem.available / (1024**3)
+            used_percent = mem.percent
+            self.mem_label.config(
+                text=f"Общ.: {total_gb:.1f} ГБ  |  Своб.: {free_gb:.1f} ГБ  |  Исп.: {used_percent}%"
+            )
+        else:
+            self.mem_label.config(text="Информация о памяти недоступна (установите psutil)")
+
+    def apply_jvm_changes(self):
+        xms = self.xms_var.get().strip()
+        xmx = self.xmx_var.get().strip()
+        rest = self.jvm_text.get("1.0", tk.END).strip()
+
+        if not xms.isdigit() or not xmx.isdigit():
+            messagebox.showerror("Ошибка", "Значения Xms и Xmx должны быть целыми числами (МБ).")
+            return
+
+        new_flags = f"-Xms{xms}M -Xmx{xmx}M"
+        if rest:
+            new_flags += " " + rest
+
+        global JVM_FLAGS
+        JVM_FLAGS = new_flags
+        self._save_launcher_config(JVM_FLAGS, self.nickname, SERVER_ADDRESS)
+        self.update_jvm_ui()
+        self.log_message("[СИСТЕМА] JVM-флаги обновлены.")
+        messagebox.showinfo("Готово", "JVM-аргументы успешно сохранены.")
+
+    def reset_jvm_to_default(self):
+        default_flags = DEFAULT_LAUNCHER_CONFIG["jvm_flags"]
+        global JVM_FLAGS
+        JVM_FLAGS = default_flags
+        self._save_launcher_config(JVM_FLAGS, self.nickname, SERVER_ADDRESS)
+        self.update_jvm_ui()
+        self.log_message("[СИСТЕМА] JVM-флаги сброшены к значениям по умолчанию.")
+        messagebox.showinfo("Готово", "JVM-аргументы сброшены до стандартных.")
+
+    # ---------- ОБНОВЛЕНИЕ ЛАУНЧЕРА ----------
+    def check_for_updates(self):
+        """Проверяет наличие обновлений на GitHub и запускает обновление."""
+        if getattr(sys, 'frozen', False):
+            threading.Thread(target=self._update_launcher_thread, daemon=True).start()
+        else:
+            messagebox.showinfo("Информация", "Обновление доступно только для собранного .exe файла.")
+
+    def _update_launcher_thread(self):
+        self.btn_update_launcher.config(state=tk.DISABLED)
+        self.log_message("[ОБНОВЛЕНИЕ] Проверка обновлений...")
+        try:
+            url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+            response = requests.get(url, timeout=10)
+            if response.status_code != 200:
+                self.log_error("Обновление", f"Не удалось получить информацию о релизе (HTTP {response.status_code})")
+                messagebox.showerror("Ошибка", "Не удалось проверить обновления.")
+                self.btn_update_launcher.config(state=tk.NORMAL)
+                return
+
+            data = response.json()
+            assets = data.get("assets", [])
+            exe_asset = None
+            for asset in assets:
+                if asset["name"].endswith(".exe"):
+                    exe_asset = asset
+                    break
+            if not exe_asset:
+                self.log_error("Обновление", "В последнем релизе нет .exe файла.")
+                messagebox.showerror("Ошибка", "В релизе нет исполняемого файла.")
+                self.btn_update_launcher.config(state=tk.NORMAL)
+                return
+
+            download_url = exe_asset["browser_download_url"]
+            current_exe = sys.executable
+            temp_dir = tempfile.gettempdir()
+            new_exe_path = os.path.join(temp_dir, "launcher_new.exe")
+            self.log_message(f"[ОБНОВЛЕНИЕ] Скачивание {exe_asset['name']}...")
+            if not self.download_file(download_url, new_exe_path):
+                self.log_error("Обновление", "Не удалось скачать новый файл.")
+                messagebox.showerror("Ошибка", "Ошибка загрузки обновления.")
+                self.btn_update_launcher.config(state=tk.NORMAL)
+                return
+
+            # Заменяем текущий .exe на новый
+            try:
+                backup_exe = current_exe + ".old"
+                if os.path.exists(backup_exe):
+                    os.remove(backup_exe)
+                os.rename(current_exe, backup_exe)
+                shutil.move(new_exe_path, current_exe)
+                self.log_message("[ОБНОВЛЕНИЕ] Успешно обновлено. Перезапуск...")
+                messagebox.showinfo("Обновление", "Лаунчер обновлён! Перезапуск...")
+                subprocess.Popen([current_exe] + sys.argv[1:])
+                sys.exit(0)
+            except Exception as e:
+                self.log_error("Обновление", f"Ошибка замены файла: {e}")
+                messagebox.showerror("Ошибка", f"Не удалось заменить файл: {e}")
+                if os.path.exists(backup_exe):
+                    shutil.move(backup_exe, current_exe)
+                self.btn_update_launcher.config(state=tk.NORMAL)
+
+        except Exception as e:
+            self.log_error("Обновление", f"Исключение: {e}")
+            messagebox.showerror("Ошибка", f"Ошибка при обновлении: {e}")
+            self.btn_update_launcher.config(state=tk.NORMAL)
+
+    # ---------- Работа с настройками ----------
     def open_settings(self):
         new_config = self.request_config_dialog(
             self.root_dir, self.public_url, self.nickname
@@ -421,7 +636,8 @@ class UpdaterApp(tk.Tk):
             JVM_FLAGS = new_config["jvm_flags"]
             SERVER_ADDRESS = new_config["server"]
             self._save_launcher_config(JVM_FLAGS, self.nickname, SERVER_ADDRESS)
-            self.save_config(self.root_dir, self.public_url, self.nickname, self.selected_categories)
+            self.save_config(self.root_dir, self.public_url, self.nickname)
+            self.update_jvm_ui()
             self.log_message("[СИСТЕМА] Настройки обновлены.")
             messagebox.showinfo(
                 "Настройки",
@@ -470,8 +686,7 @@ class UpdaterApp(tk.Tk):
         if not self._install_instance():
             self.after(0, lambda: self.btn_launch.config(state=tk.NORMAL))
             return
-        all_local = [local for local, _ in CATEGORIES.values()]
-        success, _, _ = self.sync_process(all_local, silent=True)
+        success, _, _ = self.sync_process(silent=True)
         if not success:
             self.after(0, lambda: messagebox.showwarning("Ошибка", "Синхронизация модов завершилась с ошибками.\nПроверьте логи."))
         self._launch_game()
@@ -517,12 +732,7 @@ class UpdaterApp(tk.Tk):
             return False
 
     def _launch_minecraft_thread(self):
-        selected_local = [local for local, var in self.checkbox_vars.items() if var.get()]
-        if not selected_local:
-            self.after(0, self._launch_game)
-            self.after(0, lambda: self.btn_launch.config(state=tk.NORMAL))
-            return
-        success, _, _ = self.sync_process(selected_local, silent=True)
+        success, _, _ = self.sync_process(silent=True)
         if not success:
             self.after(0, lambda: messagebox.showwarning("Ошибка", "Синхронизация модов завершилась с ошибками.\nПроверьте логи."))
         self._launch_game()
@@ -559,25 +769,20 @@ class UpdaterApp(tk.Tk):
 
     # ---------- СИНХРОНИЗАЦИЯ МОДОВ ----------
     def start_sync_thread(self):
-        selected_local = [local for local, var in self.checkbox_vars.items() if var.get()]
-        if not selected_local:
-            messagebox.showwarning("Внимание", "Выберите хотя бы один компонент для скачивания!")
-            return
-
         self.btn_sync.config(state=tk.DISABLED)
         self.progress["value"] = 0
         threading.Thread(
-            target=self._sync_thread_worker, args=(selected_local,), daemon=True
+            target=self._sync_thread_worker, daemon=True
         ).start()
 
-    def _sync_thread_worker(self, selected_local):
+    def _sync_thread_worker(self):
         try:
-            self.sync_process(selected_local, silent=False)
+            self.sync_process(silent=False)
         finally:
             self.after(0, lambda: self.btn_sync.config(state=tk.NORMAL))
-            self.save_config(self.root_dir, self.public_url, self.nickname, self.selected_categories)
+            self.save_config(self.root_dir, self.public_url, self.nickname)
 
-    def sync_process(self, selected_local_paths, silent=False):
+    def sync_process(self, silent=False):
         minecraft_dir = self.get_minecraft_dir()
         self.after(0, self.log_message, f"[СТАРТ] Назначена папка сборки: {minecraft_dir}")
 
@@ -592,63 +797,58 @@ class UpdaterApp(tk.Tk):
         has_errors = False
         deleted = 0
         downloaded = 0
+        local_path = "mods"
 
-        for local_path in selected_local_paths:
-            if local_path == "mods":
-                self.after(0, self.log_message, f"\n--- ОБРАБОТКА МОДОВ (пофайловая) ---")
-                cloud_folder = "mods"
-                cloud_files, success = self.get_yandex_folder_structure(self.public_key, cloud_folder)
-                if not success:
-                    self.after(0, self.log_error, "Синхронизация", f"Пропуск категории 'mods' из-за ошибки доступа к облаку.")
+        self.after(0, self.log_message, f"\n--- ОБРАБОТКА МОДОВ (пофайловая) ---")
+        cloud_folder = "mods"
+        cloud_files, success = self.get_yandex_folder_structure(self.public_key, cloud_folder)
+        if not success:
+            self.after(0, self.log_error, "Синхронизация", f"Пропуск категории 'mods' из-за ошибки доступа к облаку.")
+            has_errors = True
+        else:
+            cloud_data = {}
+            for cloud_rel_path, (download_url, cloud_size) in cloud_files.items():
+                if cloud_rel_path.startswith(cloud_folder + "/"):
+                    local_rel = local_path + cloud_rel_path[len(cloud_folder):]
+                else:
+                    local_rel = local_path + "/" + cloud_rel_path.split("/", 1)[-1]
+                cloud_data[local_rel] = (download_url, cloud_size)
+
+            local_files = self.get_local_files(minecraft_dir, local_path)
+
+            to_delete = [rel for rel in local_files if rel not in cloud_data]
+            to_download = [(rel, url) for rel, (url, size) in cloud_data.items()
+                           if rel not in local_files or local_files[rel] != size]
+
+            self.after(0, self.log_message, f"[СРАВНЕНИЕ] К удалению: {len(to_delete)}, к загрузке: {len(to_download)}")
+
+            for rel_path in to_delete:
+                full_path = os.path.join(minecraft_dir, rel_path.replace("/", os.sep))
+                self.after(0, self.log_message, f"🗑️ Удаление: {rel_path}")
+                try:
+                    if os.path.isfile(full_path):
+                        os.remove(full_path)
+                        deleted += 1
+                        category_base = os.path.join(minecraft_dir, local_path)
+                        parent = os.path.dirname(full_path)
+                        while parent != category_base and os.path.exists(parent) and not os.listdir(parent):
+                            os.rmdir(parent)
+                            parent = os.path.dirname(parent)
+                except Exception as e:
+                    self.after(0, self.log_error, "Удаление", f"Не удалось удалить {rel_path}: {e}")
                     has_errors = True
-                    continue
 
-                cloud_data = {}
-                for cloud_rel_path, (download_url, cloud_size) in cloud_files.items():
-                    if cloud_rel_path.startswith(cloud_folder + "/"):
-                        local_rel = local_path + cloud_rel_path[len(cloud_folder):]
-                    else:
-                        local_rel = local_path + "/" + cloud_rel_path.split("/", 1)[-1]
-                    cloud_data[local_rel] = (download_url, cloud_size)
+            for rel_path, url in to_download:
+                full_path = os.path.join(minecraft_dir, rel_path.replace("/", os.sep))
+                self.after(0, self.log_message, f"📥 Установка: {rel_path}")
+                if self.download_file(url, full_path):
+                    downloaded += 1
+                else:
+                    self.after(0, self.log_error, "Синхронизация", f"Не удалось установить: {rel_path}")
+                    has_errors = True
 
-                local_files = self.get_local_files(minecraft_dir, local_path)
-
-                to_delete = [rel for rel in local_files if rel not in cloud_data]
-                to_download = [(rel, url) for rel, (url, size) in cloud_data.items()
-                               if rel not in local_files or local_files[rel] != size]
-
-                self.after(0, self.log_message, f"[СРАВНЕНИЕ] К удалению: {len(to_delete)}, к загрузке: {len(to_download)}")
-
-                for rel_path in to_delete:
-                    full_path = os.path.join(minecraft_dir, rel_path.replace("/", os.sep))
-                    self.after(0, self.log_message, f"🗑️ Удаление: {rel_path}")
-                    try:
-                        if os.path.isfile(full_path):
-                            os.remove(full_path)
-                            deleted += 1
-                            category_base = os.path.join(minecraft_dir, local_path)
-                            parent = os.path.dirname(full_path)
-                            while parent != category_base and os.path.exists(parent) and not os.listdir(parent):
-                                os.rmdir(parent)
-                                parent = os.path.dirname(parent)
-                    except Exception as e:
-                        self.after(0, self.log_error, "Удаление", f"Не удалось удалить {rel_path}: {e}")
-                        has_errors = True
-
-                for rel_path, url in to_download:
-                    full_path = os.path.join(minecraft_dir, rel_path.replace("/", os.sep))
-                    self.after(0, self.log_message, f"📥 Установка: {rel_path}")
-                    if self.download_file(url, full_path):
-                        downloaded += 1
-                    else:
-                        self.after(0, self.log_error, "Синхронизация", f"Не удалось установить: {rel_path}")
-                        has_errors = True
-
-                category_path = os.path.join(minecraft_dir, local_path)
-                self._remove_empty_dirs(category_path)
-
-            else:
-                self.after(0, self.log_message, f"[ПРЕДУПРЕЖДЕНИЕ] Неизвестная категория '{local_path}' пропущена.")
+            category_path = os.path.join(minecraft_dir, local_path)
+            self._remove_empty_dirs(category_path)
 
         if has_errors:
             self.after(0, self.log_message, f"\n⚠️ [ЗАВЕРШЕНО С ОШИБКАМИ] Удалено: {deleted}, загружено: {downloaded}.")
@@ -766,7 +966,7 @@ class UpdaterApp(tk.Tk):
                 self.log_error("Сохранение", f"Ошибка при сохранении: {e}")
                 messagebox.showerror("Ошибка", f"Не удалось сохранить {name}.")
 
-    # ---------- ДИАГНОСТИКА ----------
+    # ---------- ДИАГНОСТИКА ОБЛАКА ----------
     def start_debug_thread(self):
         threading.Thread(target=self.debug_cloud, daemon=True).start()
 
@@ -909,8 +1109,7 @@ if __name__ == "__main__":
                 print("FATAL: Cannot install Minecraft instance.")
                 sys.exit(1)
 
-        all_local = [local for local, _ in CATEGORIES.values()]
-        success, _, _ = app.sync_process(all_local, silent=True)
+        success, _, _ = app.sync_process(silent=True)
         if not success:
             print("WARNING: Sync had errors, but launching anyway.")
 
