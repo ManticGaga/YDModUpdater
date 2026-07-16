@@ -26,7 +26,7 @@ DEFAULT_LAUNCHER_CONFIG = {
     ),
     "default_public_url": "https://disk.yandex.ru/d/tenAj8XlAQEPXA",
     "default_nickname": "ManticGaga",
-    "server": ""  # IP:port сервера, если нужно автоматическое подключение
+    "server": ""
 }
 
 def load_launcher_config():
@@ -63,7 +63,6 @@ SERVER_ADDRESS = LAUNCHER_CONFIG.get("server", "")
 
 DEFAULT_ROOT_DIR = BASE_DIR
 
-# Только моды, конфиг теперь через отдельную кнопку
 CATEGORIES = {
     "Моды (mods)": ("mods", "mods"),
 }
@@ -84,8 +83,8 @@ class UpdaterApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Minecraft Modpack Updater")
-        self.geometry("600x700")
-        self.resizable(False, False)
+        self.geometry("750x600")
+        self.minsize(700, 500)
 
         if getattr(sys, 'frozen', False):
             self.base_path = os.path.dirname(sys.executable)
@@ -138,7 +137,6 @@ class UpdaterApp(tk.Tk):
                 config_dialog["nickname"],
                 config["selected_categories"]
             )
-            # Обновляем глобальные настройки из диалога
             global JVM_FLAGS, SERVER_ADDRESS
             JVM_FLAGS = config_dialog.get("jvm_flags", JVM_FLAGS)
             SERVER_ADDRESS = config_dialog.get("server", SERVER_ADDRESS)
@@ -154,7 +152,6 @@ class UpdaterApp(tk.Tk):
                 config["selected_categories"])
 
     def _save_launcher_config(self, jvm_flags, nickname, server):
-        """Сохраняет параметры запуска в launcher_config.json"""
         try:
             with open(LAUNCHER_CONFIG_PATH, "r", encoding="utf-8") as f:
                 lc = json.load(f)
@@ -192,7 +189,6 @@ class UpdaterApp(tk.Tk):
         dialog.resizable(False, False)
         dialog.grab_set()
 
-        # Загружаем текущие значения из LAUNCHER_CONFIG
         current_jvm = LAUNCHER_CONFIG.get("jvm_flags", JVM_FLAGS)
         current_server = LAUNCHER_CONFIG.get("server", SERVER_ADDRESS)
 
@@ -205,7 +201,6 @@ class UpdaterApp(tk.Tk):
         }
 
         row = 0
-        # Поле выбора корневой папки
         tk.Label(dialog, text="Папка для установки Minecraft (внутри будет создана папка Minecraft):").grid(
             row=row, column=0, sticky="w", padx=10, pady=(15, 0), columnspan=2
         )
@@ -226,7 +221,6 @@ class UpdaterApp(tk.Tk):
         btn_browse.grid(row=row, column=1, padx=(0, 10), pady=5)
         row += 1
 
-        # Поле публичной ссылки
         tk.Label(dialog, text="Публичная ссылка Яндекс.Диска:").grid(
             row=row, column=0, sticky="w", padx=10, pady=(15, 0), columnspan=2
         )
@@ -236,7 +230,6 @@ class UpdaterApp(tk.Tk):
         entry_url.grid(row=row, column=0, padx=(10, 5), pady=5, sticky="we", columnspan=2)
         row += 1
 
-        # Поле никнейма
         tk.Label(dialog, text="Игровой никнейм:").grid(
             row=row, column=0, sticky="w", padx=10, pady=(15, 0), columnspan=2
         )
@@ -246,7 +239,6 @@ class UpdaterApp(tk.Tk):
         entry_nick.grid(row=row, column=0, padx=(10, 5), pady=5, sticky="we", columnspan=2)
         row += 1
 
-        # Поле JVM-флагов
         tk.Label(dialog, text="JVM аргументы (флаги запуска):").grid(
             row=row, column=0, sticky="w", padx=10, pady=(15, 0), columnspan=2
         )
@@ -256,7 +248,6 @@ class UpdaterApp(tk.Tk):
         entry_jvm.grid(row=row, column=0, padx=(10, 5), pady=5, sticky="we", columnspan=2)
         row += 1
 
-        # Поле сервера
         tk.Label(dialog, text="Сервер для автоматического подключения (IP:port, необязательно):").grid(
             row=row, column=0, sticky="w", padx=10, pady=(15, 0), columnspan=2
         )
@@ -266,7 +257,6 @@ class UpdaterApp(tk.Tk):
         entry_server.grid(row=row, column=0, padx=(10, 5), pady=5, sticky="we", columnspan=2)
         row += 1
 
-        # Кнопки
         def on_save():
             result["root_dir"] = dir_var.get().strip()
             result["public_url"] = url_var.get().strip()
@@ -292,16 +282,22 @@ class UpdaterApp(tk.Tk):
 
     # ---------- GUI ----------
     def create_widgets(self):
-        lbl_title = tk.Label(
-            self, text="Синхронизация сборки Minecraft", font=("Arial", 14, "bold")
-        )
-        lbl_title.pack(pady=10)
+        # Основной контейнер
+        main_frame = tk.Frame(self)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        frame_checks = tk.LabelFrame(
-            self, text=" Выберите компоненты для установки ", padx=15, pady=10
-        )
-        frame_checks.pack(fill="x", padx=20, pady=5)
+        # Левый столбец
+        left_frame = tk.Frame(main_frame, width=250)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 10))
+        left_frame.pack_propagate(False)
 
+        # Заголовок
+        lbl_title = tk.Label(left_frame, text="Синхронизация сборки", font=("Arial", 14, "bold"))
+        lbl_title.pack(pady=(0, 10))
+
+        # Чекбокс
+        frame_checks = tk.LabelFrame(left_frame, text=" Компоненты ", padx=10, pady=5)
+        frame_checks.pack(fill=tk.X, pady=5)
         for ui_name, (local_path, _) in CATEGORIES.items():
             var = tk.BooleanVar(value=local_path in self.selected_categories)
             self.checkbox_vars[local_path] = var
@@ -309,27 +305,12 @@ class UpdaterApp(tk.Tk):
             chk = tk.Checkbutton(frame_checks, text=ui_name, variable=var, font=("Arial", 10))
             chk.pack(anchor="w", pady=2)
 
-        self.progress = ttk.Progressbar(
-            self, orient="horizontal", length=450, mode="determinate"
-        )
-        self.progress.pack(pady=10)
+        # Кнопки
+        btn_frame = tk.Frame(left_frame)
+        btn_frame.pack(fill=tk.X, pady=5)
 
-        # Верхняя строка кнопок
-        frame_top = tk.Frame(self)
-        frame_top.pack(pady=5)
-        self.btn_launch = tk.Button(
-            frame_top,
-            text="Запустить Minecraft",
-            command=self.launch_minecraft,
-            bg="#4CAF50",
-            fg="white",
-            font=("Arial", 11, "bold"),
-            padx=10,
-            pady=5,
-        )
-        self.btn_launch.pack(side="left", padx=10)
         self.btn_sync = tk.Button(
-            frame_top,
+            btn_frame,
             text="Обновить моды",
             command=self.start_sync_thread,
             bg="#2196F3",
@@ -338,35 +319,10 @@ class UpdaterApp(tk.Tk):
             padx=10,
             pady=5,
         )
-        self.btn_sync.pack(side="left", padx=10)
+        self.btn_sync.pack(fill=tk.X, pady=2)
 
-        # Нижняя строка кнопок
-        frame_bottom = tk.Frame(self)
-        frame_bottom.pack(pady=5)
-        self.btn_copy = tk.Button(
-            frame_bottom,
-            text="Скопировать логи",
-            command=self.copy_logs_to_clipboard,
-            bg="#607D8B",
-            fg="white",
-            font=("Arial", 11),
-            padx=10,
-            pady=5,
-        )
-        self.btn_copy.pack(side="left", padx=10)
-        self.btn_diag = tk.Button(
-            frame_bottom,
-            text="Диагностика облака",
-            command=self.start_debug_thread,
-            bg="#9E9E9E",
-            fg="white",
-            font=("Arial", 11),
-            padx=10,
-            pady=5,
-        )
-        self.btn_diag.pack(side="left", padx=10)
         self.btn_config_install = tk.Button(
-            frame_bottom,
+            btn_frame,
             text="Установить конфиг",
             command=self.choose_config_file,
             bg="#FF5722",
@@ -375,9 +331,34 @@ class UpdaterApp(tk.Tk):
             padx=10,
             pady=5,
         )
-        self.btn_config_install.pack(side="left", padx=10)
+        self.btn_config_install.pack(fill=tk.X, pady=2)
+
+        self.btn_launch = tk.Button(
+            btn_frame,
+            text="Запустить Minecraft",
+            command=self.launch_minecraft,
+            bg="#4CAF50",
+            fg="white",
+            font=("Arial", 11, "bold"),
+            padx=10,
+            pady=5,
+        )
+        self.btn_launch.pack(fill=tk.X, pady=2)
+
+        self.btn_diag = tk.Button(
+            btn_frame,
+            text="Диагностика облака",
+            command=self.start_debug_thread,
+            bg="#9E9E9E",
+            fg="white",
+            font=("Arial", 11),
+            padx=10,
+            pady=5,
+        )
+        self.btn_diag.pack(fill=tk.X, pady=2)
+
         self.btn_settings = tk.Button(
-            frame_bottom,
+            btn_frame,
             text="Настройки",
             command=self.open_settings,
             bg="#FF9800",
@@ -386,12 +367,35 @@ class UpdaterApp(tk.Tk):
             padx=10,
             pady=5,
         )
-        self.btn_settings.pack(side="left", padx=10)
+        self.btn_settings.pack(fill=tk.X, pady=2)
 
+        # Прогресс-бар
+        self.progress = ttk.Progressbar(left_frame, orient="horizontal", length=200, mode="determinate")
+        self.progress.pack(fill=tk.X, pady=10)
+
+        # Правый столбец
+        right_frame = tk.Frame(main_frame)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+
+        # Логи
         self.txt_log = tk.Text(
-            self, height=10, width=75, font=("Consolas", 9), bg="#1e1e1e", fg="#ffffff"
+            right_frame, height=15, font=("Consolas", 9), bg="#1e1e1e", fg="#ffffff"
         )
-        self.txt_log.pack(pady=10, padx=20)
+        self.txt_log.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
+
+        # Кнопка копирования логов
+        self.btn_copy = tk.Button(
+            right_frame,
+            text="Скопировать логи",
+            command=self.copy_logs_to_clipboard,
+            bg="#607D8B",
+            fg="white",
+            font=("Arial", 11),
+            padx=10,
+            pady=5,
+        )
+        self.btn_copy.pack(pady=5)
+
         self.log_message("[СИСТЕМА] Инициализация завершена. Готов к работе.")
         self.log_message(f"[СИСТЕМА] Используется публичный ключ: {self.public_key}")
 
@@ -409,18 +413,14 @@ class UpdaterApp(tk.Tk):
             self.root_dir, self.public_url, self.nickname
         )
         if new_config:
-            # Обновляем локальные переменные
             self.root_dir = new_config["root_dir"]
             self.public_url = new_config["public_url"]
             self.nickname = new_config["nickname"]
             self.public_key = resolve_public_key(self.public_url)
-            # Обновляем глобальные JVM_FLAGS и SERVER_ADDRESS
             global JVM_FLAGS, SERVER_ADDRESS
             JVM_FLAGS = new_config["jvm_flags"]
             SERVER_ADDRESS = new_config["server"]
-            # Сохраняем в launcher_config.json
             self._save_launcher_config(JVM_FLAGS, self.nickname, SERVER_ADDRESS)
-            # Сохраняем настройки updater_config.json
             self.save_config(self.root_dir, self.public_url, self.nickname, self.selected_categories)
             self.log_message("[СИСТЕМА] Настройки обновлены.")
             messagebox.showinfo(
@@ -578,9 +578,6 @@ class UpdaterApp(tk.Tk):
             self.save_config(self.root_dir, self.public_url, self.nickname, self.selected_categories)
 
     def sync_process(self, selected_local_paths, silent=False):
-        """
-        Синхронизация модов: пофайловое сравнение, удаление лишних, загрузка недостающих.
-        """
         minecraft_dir = self.get_minecraft_dir()
         self.after(0, self.log_message, f"[СТАРТ] Назначена папка сборки: {minecraft_dir}")
 
@@ -677,9 +674,8 @@ class UpdaterApp(tk.Tk):
                 except OSError:
                     pass
 
-    # ---------- УСТАНОВКА КОНФИГА (отдельная кнопка) ----------
+    # ---------- УСТАНОВКА КОНФИГА ----------
     def choose_config_file(self):
-        """Открывает диалог выбора файла из корня облака и устанавливает его как конфиг."""
         items, ok = self.list_public_folder(self.public_key, None)
         if not ok:
             messagebox.showerror("Ошибка", "Не удалось получить список файлов в корне облака.")
@@ -720,7 +716,6 @@ class UpdaterApp(tk.Tk):
         tk.Button(frame_btns, text="Отмена", command=on_cancel, width=12).pack(side="left", padx=5)
 
     def install_config_file(self, file_info):
-        """Скачивает выбранный файл и (если это zip) распаковывает в папку config."""
         name = file_info.get("name")
         download_url = file_info.get("file")
         if not download_url:
@@ -771,7 +766,7 @@ class UpdaterApp(tk.Tk):
                 self.log_error("Сохранение", f"Ошибка при сохранении: {e}")
                 messagebox.showerror("Ошибка", f"Не удалось сохранить {name}.")
 
-    # ---------- Диагностика облака ----------
+    # ---------- ДИАГНОСТИКА ----------
     def start_debug_thread(self):
         threading.Thread(target=self.debug_cloud, daemon=True).start()
 
@@ -788,7 +783,7 @@ class UpdaterApp(tk.Tk):
             kind = "папка" if item.get("type") == "dir" else "файл"
             self.after(0, self.log_message, f"  - {item.get('name')} ({kind})")
 
-    # ---------- работа с API Яндекс.Диска ----------
+    # ---------- РАБОТА С API ----------
     def list_public_folder(self, public_key, api_path):
         all_items = []
         offset = 0
