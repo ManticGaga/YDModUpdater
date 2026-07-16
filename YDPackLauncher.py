@@ -85,8 +85,8 @@ HEADERS = {
 }
 
 # GitHub параметры (замените на свои)
-GITHUB_OWNER = "ManticGaga"           # <-- замените на ваш GitHub username
-GITHUB_REPO = "YDModUpdater"  # <-- замените на название репозитория
+GITHUB_OWNER = "ваш_ник"           # <-- замените на ваш GitHub username
+GITHUB_REPO = "название_репозитория"  # <-- замените на название репозитория
 
 def resolve_public_key(url_or_key):
     if not url_or_key:
@@ -337,17 +337,17 @@ class UpdaterApp(tk.Tk):
         )
         self.btn_sync.pack(fill=tk.X, pady=2)
 
-        self.btn_config_install = tk.Button(
+        self.btn_additional = tk.Button(
             btn_frame,
-            text="Установить конфиг",
-            command=self.choose_config_file,
+            text="Установить доп. файлы",
+            command=self.choose_additional_item,
             bg="#FF5722",
             fg="white",
             font=("Arial", 11),
             padx=10,
             pady=5,
         )
-        self.btn_config_install.pack(fill=tk.X, pady=2)
+        self.btn_additional.pack(fill=tk.X, pady=2)
 
         self.btn_settings = tk.Button(
             btn_frame,
@@ -767,7 +767,7 @@ class UpdaterApp(tk.Tk):
             self.log_error("Запуск", f"Не удалось запустить игру: {e}")
             messagebox.showerror("Ошибка", "Не удалось запустить Minecraft. Проверьте логи.")
 
-    # ---------- СИНХРОНИЗАЦИЯ МОДОВ ----------
+    # ---------- СИНХРОНИЗАЦИЯ МОДОВ (с удалением лишних) ----------
     def start_sync_thread(self):
         self.btn_sync.config(state=tk.DISABLED)
         self.progress["value"] = 0
@@ -799,7 +799,7 @@ class UpdaterApp(tk.Tk):
         downloaded = 0
         local_path = "mods"
 
-        self.after(0, self.log_message, f"\n--- ОБРАБОТКА МОДОВ (пофайловая) ---")
+        self.after(0, self.log_message, f"\n--- ОБРАБОТКА МОДОВ (пофайловая с удалением) ---")
         cloud_folder = "mods"
         cloud_files, success = self.get_yandex_folder_structure(self.public_key, cloud_folder)
         if not success:
@@ -874,38 +874,102 @@ class UpdaterApp(tk.Tk):
                 except OSError:
                     pass
 
-    # ---------- УСТАНОВКА КОНФИГА ----------
-    def choose_config_file(self):
+    # ---------- СИНХРОНИЗАЦИЯ ПАПКИ БЕЗ УДАЛЕНИЯ (для доп. файлов) ----------
+    def sync_folder_no_delete(self, cloud_folder, local_path):
+        """Синхронизирует папку: скачивает недостающие и обновлённые файлы, но НЕ удаляет локальные."""
+        minecraft_dir = self.get_minecraft_dir()
+        self.log_message(f"[СИНХРОНИЗАЦИЯ] Папка {cloud_folder} -> {local_path} (без удаления)")
+        cloud_files, success = self.get_yandex_folder_structure(self.public_key, cloud_folder)
+        if not success:
+            self.log_error("Синхронизация", f"Не удалось получить список файлов в папке '{cloud_folder}'.")
+            return False, 0
+
+        if not cloud_files:
+            self.log_message(f"[СИНХРОНИЗАЦИЯ] В облачной папке '{cloud_folder}' нет файлов.")
+            return True, 0
+
+        downloaded = 0
+        has_errors = False
+
+        # Приводим облачные пути к локальным (сохраняя структуру подпапок)
+        local_files = self.get_local_files(minecraft_dir, local_path)
+
+        for cloud_rel_path, (download_url, cloud_size) in cloud_files.items():
+            # Формируем локальный путь относительно папки инстанса
+            if cloud_rel_path.startswith(cloud_folder + "/"):
+                local_rel = local_path + cloud_rel_path[len(cloud_folder):]
+            else:
+                local_rel = local_path + "/" + cloud_rel_path.split("/", 1)[-1]
+
+            full_local_path = os.path.join(minecraft_dir, local_rel.replace("/", os.sep))
+            # Проверяем: если файл отсутствует или отличается по размеру – скачиваем
+            need_download = False
+            if local_rel not in local_files:
+                need_download = True
+            elif local_files[local_rel] != cloud_size:
+                need_download = True
+                self.log_message(f"[ОБНОВЛЕНИЕ] {local_rel} (размер изменился)")
+
+            if need_download:
+                self.log_message(f"📥 Установка: {local_rel}")
+                if self.download_file(download_url, full_local_path):
+                    downloaded += 1
+                else:
+                    self.log_error("Синхронизация", f"Не удалось установить: {local_rel}")
+                    has_errors = True
+
+        if has_errors:
+            self.log_message(f"[ЗАВЕРШЕНО С ОШИБКАМИ] Загружено: {downloaded}.")
+            return False, downloaded
+        else:
+            self.log_message(f"[УСПЕХ] Загружено: {downloaded}.")
+            return True, downloaded
+
+    # ---------- УСТАНОВКА ДОП. ФАЙЛОВ (папки и файлы) ----------
+    def choose_additional_item(self):
+        """Показывает список папок и файлов в корне облака, даёт выбрать."""
         items, ok = self.list_public_folder(self.public_key, None)
         if not ok:
-            messagebox.showerror("Ошибка", "Не удалось получить список файлов в корне облака.")
+            messagebox.showerror("Ошибка", "Не удалось получить список элементов в корне облака.")
             return
+        if not items:
+            messagebox.showinfo("Нет элементов", "В корне облака ничего нет.")
+            return
+
+        # Сортируем: сначала папки, потом файлы
+        dirs = [it for it in items if it.get("type") == "dir"]
         files = [it for it in items if it.get("type") == "file"]
-        if not files:
-            messagebox.showinfo("Нет файлов", "В корне облака нет файлов.")
-            return
+        items_sorted = dirs + files
 
         dialog = tk.Toplevel(self)
-        dialog.title("Выберите файл конфигурации")
-        dialog.geometry("400x300")
+        dialog.title("Выберите элемент для установки")
+        dialog.geometry("450x400")
         dialog.grab_set()
 
-        tk.Label(dialog, text="Доступные файлы в корне облака:").pack(pady=5)
+        tk.Label(dialog, text="Выберите папку (синхронизация без удаления) или файл:").pack(pady=5)
         listbox = tk.Listbox(dialog)
         listbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
-        for f in files:
-            listbox.insert(tk.END, f.get("name"))
+        for item in items_sorted:
+            kind = "📁" if item.get("type") == "dir" else "📄"
+            listbox.insert(tk.END, f"{kind} {item.get('name')}")
 
         def on_ok():
             selection = listbox.curselection()
             if selection:
                 index = selection[0]
-                selected = files[index]
+                selected = items_sorted[index]
                 dialog.destroy()
-                self.install_config_file(selected)
+                if selected.get("type") == "dir":
+                    # Синхронизация папки без удаления
+                    folder_name = selected.get("name")
+                    local_folder = folder_name  # прямо в корень инстанса (например, shaderpacks, resourcepacks)
+                    threading.Thread(target=self._install_folder_thread, args=(folder_name, local_folder), daemon=True).start()
+                else:
+                    # Файл – установка по старой логике
+                    self.install_additional_file(selected)
             else:
-                messagebox.showwarning("Внимание", "Выберите файл.")
+                messagebox.showwarning("Внимание", "Выберите элемент.")
 
         def on_cancel():
             dialog.destroy()
@@ -915,7 +979,23 @@ class UpdaterApp(tk.Tk):
         tk.Button(frame_btns, text="Установить", command=on_ok, bg="#4CAF50", fg="white", width=12).pack(side="left", padx=5)
         tk.Button(frame_btns, text="Отмена", command=on_cancel, width=12).pack(side="left", padx=5)
 
-    def install_config_file(self, file_info):
+    def _install_folder_thread(self, cloud_folder, local_folder):
+        self.btn_additional.config(state=tk.DISABLED)
+        self.progress["value"] = 0
+        try:
+            success, count = self.sync_folder_no_delete(cloud_folder, local_folder)
+            if success:
+                messagebox.showinfo("Готово", f"Папка '{cloud_folder}' успешно синхронизирована (загружено {count} файлов).")
+            else:
+                messagebox.showwarning("Предупреждение", f"Синхронизация '{cloud_folder}' завершена с ошибками.")
+        except Exception as e:
+            self.log_error("Ошибка", f"Исключение: {e}")
+            messagebox.showerror("Ошибка", f"Ошибка синхронизации: {e}")
+        finally:
+            self.btn_additional.config(state=tk.NORMAL)
+
+    def install_additional_file(self, file_info):
+        """Устанавливает файл по старой логике: config.zip -> config, остальное -> Доп Установки."""
         name = file_info.get("name")
         download_url = file_info.get("file")
         if not download_url:
@@ -933,23 +1013,24 @@ class UpdaterApp(tk.Tk):
             messagebox.showerror("Ошибка", f"Не удалось скачать {name}.")
             return
 
-        if name.lower().endswith(".zip"):
-            config_path = os.path.join(minecraft_dir, "config")
-            if os.path.exists(config_path):
+        # Определяем целевое место
+        if name.lower() == "config.zip":
+            target_dir = os.path.join(minecraft_dir, "config")
+            self.log_message(f"[УСТАНОВКА] Файл {name} будет установлен как конфигурация в {target_dir}")
+            if os.path.exists(target_dir):
                 try:
-                    shutil.rmtree(config_path)
+                    shutil.rmtree(target_dir)
                     self.log_message("[ОЧИСТКА] Удалена старая папка config.")
                 except Exception as e:
                     self.log_error("Очистка", f"Не удалось удалить папку config: {e}")
                     os.remove(temp_path)
                     messagebox.showerror("Ошибка", "Не удалось удалить старую папку config.")
                     return
-            os.makedirs(config_path, exist_ok=True)
-
+            os.makedirs(target_dir, exist_ok=True)
             try:
                 with zipfile.ZipFile(temp_path, 'r') as zf:
-                    zf.extractall(config_path)
-                self.log_message(f"[РАСПАКОВКА] {name} распакован в {config_path}")
+                    zf.extractall(target_dir)
+                self.log_message(f"[РАСПАКОВКА] {name} распакован в {target_dir}")
                 messagebox.showinfo("Готово", f"Конфигурация установлена из {name}.")
             except Exception as e:
                 self.log_error("Распаковка", f"Ошибка при распаковке: {e}")
@@ -957,14 +1038,30 @@ class UpdaterApp(tk.Tk):
             finally:
                 os.remove(temp_path)
         else:
-            dest = os.path.join(minecraft_dir, name)
-            try:
-                shutil.move(temp_path, dest)
-                self.log_message(f"[УСТАНОВЛЕНО] {name} сохранён в {dest}")
-                messagebox.showinfo("Готово", f"Файл {name} сохранён в папку инстанса.")
-            except Exception as e:
-                self.log_error("Сохранение", f"Ошибка при сохранении: {e}")
-                messagebox.showerror("Ошибка", f"Не удалось сохранить {name}.")
+            # Все остальные файлы -> папка "Доп Установки"
+            additional_dir = os.path.join(minecraft_dir, "Доп Установки")
+            os.makedirs(additional_dir, exist_ok=True)
+            if name.lower().endswith(".zip"):
+                # Распаковываем zip прямо в additional_dir
+                try:
+                    with zipfile.ZipFile(temp_path, 'r') as zf:
+                        zf.extractall(additional_dir)
+                    self.log_message(f"[РАСПАКОВКА] {name} распакован в {additional_dir}")
+                    messagebox.showinfo("Готово", f"Файл {name} распакован в папку 'Доп Установки'.")
+                except Exception as e:
+                    self.log_error("Распаковка", f"Ошибка при распаковке: {e}")
+                    messagebox.showerror("Ошибка", f"Не удалось распаковать {name}.")
+                finally:
+                    os.remove(temp_path)
+            else:
+                dest = os.path.join(additional_dir, name)
+                try:
+                    shutil.move(temp_path, dest)
+                    self.log_message(f"[УСТАНОВЛЕНО] {name} сохранён в {dest}")
+                    messagebox.showinfo("Готово", f"Файл {name} сохранён в папку 'Доп Установки'.")
+                except Exception as e:
+                    self.log_error("Сохранение", f"Ошибка при сохранении: {e}")
+                    messagebox.showerror("Ошибка", f"Не удалось сохранить {name}.")
 
     # ---------- ДИАГНОСТИКА ОБЛАКА ----------
     def start_debug_thread(self):

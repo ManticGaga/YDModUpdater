@@ -1,2 +1,2 @@
-python MinecraftLauncherScript.py
+python YDPackLauncher.py
 pause
