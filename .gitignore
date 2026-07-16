@@ -1,6 +1,8 @@
 # Игнорируем папку с игрой (инстансы и прочее)
 /Minecraft/
 /minecraft/
+/build/
+/dist/
 
 # Python
 __pycache__/

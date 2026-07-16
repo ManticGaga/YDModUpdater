@@ -30,7 +30,6 @@ DEFAULT_LAUNCHER_CONFIG = {
 }
 
 def load_launcher_config():
-    """Загружает конфигурацию запуска из launcher_config.json, при необходимости создаёт файл."""
     if not os.path.exists(LAUNCHER_CONFIG_PATH):
         try:
             with open(LAUNCHER_CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -43,7 +42,6 @@ def load_launcher_config():
     try:
         with open(LAUNCHER_CONFIG_PATH, "r", encoding="utf-8") as f:
             config = json.load(f)
-        # Заполняем отсутствующие ключи значениями по умолчанию
         for key, value in DEFAULT_LAUNCHER_CONFIG.items():
             if key not in config:
                 config[key] = value
@@ -65,10 +63,9 @@ SERVER_ADDRESS = LAUNCHER_CONFIG.get("server", "")
 
 DEFAULT_ROOT_DIR = BASE_DIR
 
-# Категории: {UI-имя: (локальный_путь_от_инстанса, облачная_папка)}
+# Только моды, конфиг теперь через отдельную кнопку
 CATEGORIES = {
     "Моды (mods)": ("mods", "mods"),
-    "Конфигурация (config)": ("config", "config")
 }
 
 API_BASE_URL = "https://cloud-api.yandex.net/v1/disk/public/resources"
@@ -77,19 +74,17 @@ HEADERS = {
                   "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-
 def resolve_public_key(url_or_key):
     if not url_or_key:
         return ""
     return url_or_key.strip()
-
 
 class UpdaterApp(tk.Tk):
 
     def __init__(self):
         super().__init__()
         self.title("Minecraft Modpack Updater")
-        self.geometry("600x650")
+        self.geometry("600x700")
         self.resizable(False, False)
 
         if getattr(sys, 'frozen', False):
@@ -99,7 +94,6 @@ class UpdaterApp(tk.Tk):
 
         self.config_path = os.path.join(self.base_path, "updater_config.json")
 
-        # Загружаем настройки (корневая папка, ссылка, ник, выбранные категории)
         (self.root_dir,
          self.public_url,
          self.nickname,
@@ -111,11 +105,9 @@ class UpdaterApp(tk.Tk):
 
     # ---------- Вспомогательные пути ----------
     def get_minecraft_dir(self):
-        """Папка инстанса Sex3: root_dir/Minecraft/instances/Sex3"""
         return os.path.join(self.root_dir, "Minecraft", "instances", "Sex3")
 
     def get_instance_parent_dir(self):
-        """Папка, в которой cmd-launcher хранит инстансы: root_dir/Minecraft"""
         return os.path.join(self.root_dir, "Minecraft")
 
     # ---------- работа с конфигурацией ----------
@@ -131,11 +123,9 @@ class UpdaterApp(tk.Tk):
                     f"Не удалось прочитать файл настроек:\n{e}\nБудут использованы значения по умолчанию.",
                 )
 
-        # Если нет ключа selected_categories, выбираем все
         if "selected_categories" not in config:
             config["selected_categories"] = [local for local, _ in CATEGORIES.values()]
 
-        # Если отсутствуют основные ключи – диалог
         if not all(k in config for k in ("root_dir", "public_url", "nickname")):
             config_dialog = self.request_config_dialog(
                 config.get("root_dir", DEFAULT_ROOT_DIR),
@@ -148,6 +138,11 @@ class UpdaterApp(tk.Tk):
                 config_dialog["nickname"],
                 config["selected_categories"]
             )
+            # Обновляем глобальные настройки из диалога
+            global JVM_FLAGS, SERVER_ADDRESS
+            JVM_FLAGS = config_dialog.get("jvm_flags", JVM_FLAGS)
+            SERVER_ADDRESS = config_dialog.get("server", SERVER_ADDRESS)
+            self._save_launcher_config(JVM_FLAGS, config_dialog["nickname"], SERVER_ADDRESS)
             return (config_dialog["root_dir"],
                     config_dialog["public_url"],
                     config_dialog["nickname"],
@@ -157,6 +152,22 @@ class UpdaterApp(tk.Tk):
                 config["public_url"],
                 config["nickname"],
                 config["selected_categories"])
+
+    def _save_launcher_config(self, jvm_flags, nickname, server):
+        """Сохраняет параметры запуска в launcher_config.json"""
+        try:
+            with open(LAUNCHER_CONFIG_PATH, "r", encoding="utf-8") as f:
+                lc = json.load(f)
+        except:
+            lc = DEFAULT_LAUNCHER_CONFIG.copy()
+        lc["jvm_flags"] = jvm_flags
+        lc["default_nickname"] = nickname
+        lc["server"] = server
+        try:
+            with open(LAUNCHER_CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(lc, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.log_error("Сохранение", f"Не удалось сохранить launcher_config.json: {e}")
 
     def save_config(self, root_dir, public_url, nickname, selected_categories=None):
         config = {
@@ -177,23 +188,31 @@ class UpdaterApp(tk.Tk):
     def request_config_dialog(self, current_root_dir, current_url, current_nick):
         dialog = tk.Toplevel(self)
         dialog.title("Настройки")
-        dialog.geometry("600x320")
+        dialog.geometry("650x500")
         dialog.resizable(False, False)
         dialog.grab_set()
+
+        # Загружаем текущие значения из LAUNCHER_CONFIG
+        current_jvm = LAUNCHER_CONFIG.get("jvm_flags", JVM_FLAGS)
+        current_server = LAUNCHER_CONFIG.get("server", SERVER_ADDRESS)
 
         result = {
             "root_dir": current_root_dir,
             "public_url": current_url,
             "nickname": current_nick,
+            "jvm_flags": current_jvm,
+            "server": current_server,
         }
 
+        row = 0
         # Поле выбора корневой папки
         tk.Label(dialog, text="Папка для установки Minecraft (внутри будет создана папка Minecraft):").grid(
-            row=0, column=0, sticky="w", padx=10, pady=(15, 0)
+            row=row, column=0, sticky="w", padx=10, pady=(15, 0), columnspan=2
         )
+        row += 1
         dir_var = tk.StringVar(value=result["root_dir"])
         entry_dir = tk.Entry(dialog, textvariable=dir_var, width=55)
-        entry_dir.grid(row=1, column=0, padx=(10, 5), pady=5, sticky="we")
+        entry_dir.grid(row=row, column=0, padx=(10, 5), pady=5, sticky="we")
 
         def browse_folder():
             path = filedialog.askdirectory(
@@ -204,38 +223,67 @@ class UpdaterApp(tk.Tk):
                 dir_var.set(path)
 
         btn_browse = tk.Button(dialog, text="Обзор...", command=browse_folder)
-        btn_browse.grid(row=1, column=1, padx=(0, 10), pady=5)
+        btn_browse.grid(row=row, column=1, padx=(0, 10), pady=5)
+        row += 1
 
         # Поле публичной ссылки
         tk.Label(dialog, text="Публичная ссылка Яндекс.Диска:").grid(
-            row=2, column=0, sticky="w", padx=10, pady=(15, 0)
+            row=row, column=0, sticky="w", padx=10, pady=(15, 0), columnspan=2
         )
+        row += 1
         url_var = tk.StringVar(value=result["public_url"])
         entry_url = tk.Entry(dialog, textvariable=url_var, width=55)
-        entry_url.grid(row=3, column=0, padx=(10, 5), pady=5, sticky="we")
+        entry_url.grid(row=row, column=0, padx=(10, 5), pady=5, sticky="we", columnspan=2)
+        row += 1
 
         # Поле никнейма
         tk.Label(dialog, text="Игровой никнейм:").grid(
-            row=4, column=0, sticky="w", padx=10, pady=(15, 0)
+            row=row, column=0, sticky="w", padx=10, pady=(15, 0), columnspan=2
         )
+        row += 1
         nick_var = tk.StringVar(value=result["nickname"])
         entry_nick = tk.Entry(dialog, textvariable=nick_var, width=55)
-        entry_nick.grid(row=5, column=0, padx=(10, 5), pady=5, sticky="we")
+        entry_nick.grid(row=row, column=0, padx=(10, 5), pady=5, sticky="we", columnspan=2)
+        row += 1
+
+        # Поле JVM-флагов
+        tk.Label(dialog, text="JVM аргументы (флаги запуска):").grid(
+            row=row, column=0, sticky="w", padx=10, pady=(15, 0), columnspan=2
+        )
+        row += 1
+        jvm_var = tk.StringVar(value=result["jvm_flags"])
+        entry_jvm = tk.Entry(dialog, textvariable=jvm_var, width=55)
+        entry_jvm.grid(row=row, column=0, padx=(10, 5), pady=5, sticky="we", columnspan=2)
+        row += 1
+
+        # Поле сервера
+        tk.Label(dialog, text="Сервер для автоматического подключения (IP:port, необязательно):").grid(
+            row=row, column=0, sticky="w", padx=10, pady=(15, 0), columnspan=2
+        )
+        row += 1
+        server_var = tk.StringVar(value=result["server"])
+        entry_server = tk.Entry(dialog, textvariable=server_var, width=55)
+        entry_server.grid(row=row, column=0, padx=(10, 5), pady=5, sticky="we", columnspan=2)
+        row += 1
 
         # Кнопки
         def on_save():
             result["root_dir"] = dir_var.get().strip()
             result["public_url"] = url_var.get().strip()
             result["nickname"] = nick_var.get().strip()
+            result["jvm_flags"] = jvm_var.get().strip()
+            result["server"] = server_var.get().strip()
             dialog.destroy()
 
         def on_default():
             dir_var.set(DEFAULT_ROOT_DIR)
             url_var.set(DEFAULT_PUBLIC_URL)
             nick_var.set(DEFAULT_NICKNAME)
+            jvm_var.set(DEFAULT_LAUNCHER_CONFIG["jvm_flags"])
+            server_var.set("")
 
         frame_btns = tk.Frame(dialog)
-        frame_btns.grid(row=6, column=0, columnspan=2, pady=15)
+        frame_btns.grid(row=row, column=0, columnspan=2, pady=15)
         tk.Button(frame_btns, text="По умолчанию", command=on_default, width=14).pack(side="left", padx=5)
         tk.Button(frame_btns, text="Сохранить", command=on_save, bg="#4CAF50", fg="white", width=14).pack(side="left", padx=5)
 
@@ -257,7 +305,6 @@ class UpdaterApp(tk.Tk):
         for ui_name, (local_path, _) in CATEGORIES.items():
             var = tk.BooleanVar(value=local_path in self.selected_categories)
             self.checkbox_vars[local_path] = var
-            # Сохранять изменения сразу при клике
             var.trace('w', lambda *args, lp=local_path: self._on_checkbox_change(lp))
             chk = tk.Checkbutton(frame_checks, text=ui_name, variable=var, font=("Arial", 10))
             chk.pack(anchor="w", pady=2)
@@ -267,7 +314,7 @@ class UpdaterApp(tk.Tk):
         )
         self.progress.pack(pady=10)
 
-        # Кнопки – две строки
+        # Верхняя строка кнопок
         frame_top = tk.Frame(self)
         frame_top.pack(pady=5)
         self.btn_launch = tk.Button(
@@ -283,7 +330,7 @@ class UpdaterApp(tk.Tk):
         self.btn_launch.pack(side="left", padx=10)
         self.btn_sync = tk.Button(
             frame_top,
-            text="Обновить компоненты",
+            text="Обновить моды",
             command=self.start_sync_thread,
             bg="#2196F3",
             fg="white",
@@ -293,6 +340,7 @@ class UpdaterApp(tk.Tk):
         )
         self.btn_sync.pack(side="left", padx=10)
 
+        # Нижняя строка кнопок
         frame_bottom = tk.Frame(self)
         frame_bottom.pack(pady=5)
         self.btn_copy = tk.Button(
@@ -317,7 +365,18 @@ class UpdaterApp(tk.Tk):
             pady=5,
         )
         self.btn_diag.pack(side="left", padx=10)
-        self.btn_config = tk.Button(
+        self.btn_config_install = tk.Button(
+            frame_bottom,
+            text="Установить конфиг",
+            command=self.choose_config_file,
+            bg="#FF5722",
+            fg="white",
+            font=("Arial", 11),
+            padx=10,
+            pady=5,
+        )
+        self.btn_config_install.pack(side="left", padx=10)
+        self.btn_settings = tk.Button(
             frame_bottom,
             text="Настройки",
             command=self.open_settings,
@@ -327,7 +386,7 @@ class UpdaterApp(tk.Tk):
             padx=10,
             pady=5,
         )
-        self.btn_config.pack(side="left", padx=10)
+        self.btn_settings.pack(side="left", padx=10)
 
         self.txt_log = tk.Text(
             self, height=10, width=75, font=("Consolas", 9), bg="#1e1e1e", fg="#ffffff"
@@ -337,7 +396,6 @@ class UpdaterApp(tk.Tk):
         self.log_message(f"[СИСТЕМА] Используется публичный ключ: {self.public_key}")
 
     def _on_checkbox_change(self, local_path):
-        """Обновляет список выбранных категорий и сохраняет конфиг."""
         if self.checkbox_vars[local_path].get():
             if local_path not in self.selected_categories:
                 self.selected_categories.append(local_path)
@@ -351,16 +409,23 @@ class UpdaterApp(tk.Tk):
             self.root_dir, self.public_url, self.nickname
         )
         if new_config:
+            # Обновляем локальные переменные
             self.root_dir = new_config["root_dir"]
             self.public_url = new_config["public_url"]
             self.nickname = new_config["nickname"]
             self.public_key = resolve_public_key(self.public_url)
-            # Сохраняем с текущим списком выбранных категорий
+            # Обновляем глобальные JVM_FLAGS и SERVER_ADDRESS
+            global JVM_FLAGS, SERVER_ADDRESS
+            JVM_FLAGS = new_config["jvm_flags"]
+            SERVER_ADDRESS = new_config["server"]
+            # Сохраняем в launcher_config.json
+            self._save_launcher_config(JVM_FLAGS, self.nickname, SERVER_ADDRESS)
+            # Сохраняем настройки updater_config.json
             self.save_config(self.root_dir, self.public_url, self.nickname, self.selected_categories)
             self.log_message("[СИСТЕМА] Настройки обновлены.")
             messagebox.showinfo(
                 "Настройки",
-                "Настройки сохранены. Новый путь будет использован при следующем запуске.",
+                "Настройки сохранены. Новые параметры будут использованы при следующем запуске.",
             )
 
     def log_message(self, message):
@@ -405,11 +470,10 @@ class UpdaterApp(tk.Tk):
         if not self._install_instance():
             self.after(0, lambda: self.btn_launch.config(state=tk.NORMAL))
             return
-        # Первый запуск – синхронизируем все категории
         all_local = [local for local, _ in CATEGORIES.values()]
         success, _, _ = self.sync_process(all_local, silent=True)
         if not success:
-            self.after(0, lambda: messagebox.showwarning("Ошибка", "Синхронизация завершилась с ошибками.\nПроверьте логи."))
+            self.after(0, lambda: messagebox.showwarning("Ошибка", "Синхронизация модов завершилась с ошибками.\nПроверьте логи."))
         self._launch_game()
 
     def _install_instance(self):
@@ -453,7 +517,6 @@ class UpdaterApp(tk.Tk):
             return False
 
     def _launch_minecraft_thread(self):
-        """Обычный запуск: синхронизируем только выбранные категории."""
         selected_local = [local for local, var in self.checkbox_vars.items() if var.get()]
         if not selected_local:
             self.after(0, self._launch_game)
@@ -461,7 +524,7 @@ class UpdaterApp(tk.Tk):
             return
         success, _, _ = self.sync_process(selected_local, silent=True)
         if not success:
-            self.after(0, lambda: messagebox.showwarning("Ошибка", "Синхронизация завершилась с ошибками.\nПроверьте логи."))
+            self.after(0, lambda: messagebox.showwarning("Ошибка", "Синхронизация модов завершилась с ошибками.\nПроверьте логи."))
         self._launch_game()
         self.after(0, lambda: self.btn_launch.config(state=tk.NORMAL))
 
@@ -483,8 +546,7 @@ class UpdaterApp(tk.Tk):
             "--dir", parent_dir,
             f"--jvm-args={JVM_FLAGS}",
         ]
-        # Добавляем сервер, если указан в конфиге
-        server = LAUNCHER_CONFIG.get("server", "")
+        server = SERVER_ADDRESS
         if server:
             args.extend(["--server", server])
 
@@ -495,7 +557,7 @@ class UpdaterApp(tk.Tk):
             self.log_error("Запуск", f"Не удалось запустить игру: {e}")
             messagebox.showerror("Ошибка", "Не удалось запустить Minecraft. Проверьте логи.")
 
-    # ---------- Синхронизация (новая логика) ----------
+    # ---------- СИНХРОНИЗАЦИЯ МОДОВ ----------
     def start_sync_thread(self):
         selected_local = [local for local, var in self.checkbox_vars.items() if var.get()]
         if not selected_local:
@@ -517,9 +579,7 @@ class UpdaterApp(tk.Tk):
 
     def sync_process(self, selected_local_paths, silent=False):
         """
-        Синхронизация:
-        - для mods: пофайловое сравнение, удаление лишних, загрузка недостающих.
-        - для config: скачивание config.zip, удаление старой папки config, распаковка, удаление zip.
+        Синхронизация модов: пофайловое сравнение, удаление лишних, загрузка недостающих.
         """
         minecraft_dir = self.get_minecraft_dir()
         self.after(0, self.log_message, f"[СТАРТ] Назначена папка сборки: {minecraft_dir}")
@@ -535,80 +595,9 @@ class UpdaterApp(tk.Tk):
         has_errors = False
         deleted = 0
         downloaded = 0
-        total_tasks = 0  # будет подсчитано позже
 
-        # Обрабатываем каждую категорию
         for local_path in selected_local_paths:
-            if local_path == "config":
-                # --- Обработка конфига через ZIP ---
-                self.after(0, self.log_message, f"\n--- ОБРАБОТКА КОНФИГА (ZIP) ---")
-                # Получаем список файлов в корне облака
-                root_items, ok = self.list_public_folder(self.public_key, None)
-                if not ok:
-                    self.after(0, self.log_error, "Облако", "Не удалось получить список файлов в корне.")
-                    has_errors = True
-                    continue
-
-                zip_item = next((it for it in root_items if it.get("type") == "file" and it.get("name") == "config.zip"), None)
-                if not zip_item:
-                    self.after(0, self.log_error, "Облако", "Файл config.zip не найден в корне публичной папки.")
-                    has_errors = True
-                    continue
-
-                download_url = zip_item.get("file")
-                if not download_url:
-                    self.after(0, self.log_error, "Облако", "Не удалось получить ссылку на config.zip.")
-                    has_errors = True
-                    continue
-
-                # Скачиваем zip во временный файл
-                zip_temp = os.path.join(minecraft_dir, "config_temp.zip")
-                self.after(0, self.log_message, f"📥 Скачивание config.zip...")
-                if not self.download_file(download_url, zip_temp):
-                    self.after(0, self.log_error, "Скачивание", "Не удалось скачать config.zip.")
-                    has_errors = True
-                    continue
-
-                # Удаляем существующую папку config (если есть)
-                config_path = os.path.join(minecraft_dir, "config")
-                if os.path.exists(config_path):
-                    try:
-                        shutil.rmtree(config_path)
-                        self.after(0, self.log_message, f"[ОЧИСТКА] Удалена старая папка config.")
-                    except Exception as e:
-                        self.after(0, self.log_error, "Очистка", f"Не удалось удалить папку config: {e}")
-                        has_errors = True
-                        try:
-                            os.remove(zip_temp)
-                        except:
-                            pass
-                        continue
-
-                # Создаём пустую папку config
-                os.makedirs(config_path, exist_ok=True)
-
-                # Распаковываем zip в config_path
-                try:
-                    with zipfile.ZipFile(zip_temp, 'r') as zf:
-                        zf.extractall(config_path)
-                    self.after(0, self.log_message, f"[РАСПАКОВКА] config.zip успешно распакован в {config_path}")
-                    downloaded += 1
-                except Exception as e:
-                    self.after(0, self.log_error, "Распаковка", f"Ошибка при распаковке config.zip: {e}")
-                    has_errors = True
-
-                # Удаляем временный zip
-                try:
-                    os.remove(zip_temp)
-                    self.after(0, self.log_message, f"[ОЧИСТКА] Временный файл config.zip удалён.")
-                except:
-                    pass
-
-                # Обновляем прогресс (условно 100% для этой категории)
-                self.after(0, self.update_gui_progress, 100)
-
-            elif local_path == "mods":
-                # --- Обработка модов через пофайловую синхронизацию ---
+            if local_path == "mods":
                 self.after(0, self.log_message, f"\n--- ОБРАБОТКА МОДОВ (пофайловая) ---")
                 cloud_folder = "mods"
                 cloud_files, success = self.get_yandex_folder_structure(self.public_key, cloud_folder)
@@ -617,7 +606,6 @@ class UpdaterApp(tk.Tk):
                     has_errors = True
                     continue
 
-                # Преобразуем облачные пути в локальные относительно minecraft_dir
                 cloud_data = {}
                 for cloud_rel_path, (download_url, cloud_size) in cloud_files.items():
                     if cloud_rel_path.startswith(cloud_folder + "/"):
@@ -626,17 +614,14 @@ class UpdaterApp(tk.Tk):
                         local_rel = local_path + "/" + cloud_rel_path.split("/", 1)[-1]
                     cloud_data[local_rel] = (download_url, cloud_size)
 
-                # Получаем локальные файлы
                 local_files = self.get_local_files(minecraft_dir, local_path)
 
-                # Вычисляем, что удалять и что качать
                 to_delete = [rel for rel in local_files if rel not in cloud_data]
                 to_download = [(rel, url) for rel, (url, size) in cloud_data.items()
                                if rel not in local_files or local_files[rel] != size]
 
                 self.after(0, self.log_message, f"[СРАВНЕНИЕ] К удалению: {len(to_delete)}, к загрузке: {len(to_download)}")
 
-                # Удаление
                 for rel_path in to_delete:
                     full_path = os.path.join(minecraft_dir, rel_path.replace("/", os.sep))
                     self.after(0, self.log_message, f"🗑️ Удаление: {rel_path}")
@@ -644,7 +629,6 @@ class UpdaterApp(tk.Tk):
                         if os.path.isfile(full_path):
                             os.remove(full_path)
                             deleted += 1
-                            # Удаляем пустые родительские папки (но не корень категории)
                             category_base = os.path.join(minecraft_dir, local_path)
                             parent = os.path.dirname(full_path)
                             while parent != category_base and os.path.exists(parent) and not os.listdir(parent):
@@ -654,7 +638,6 @@ class UpdaterApp(tk.Tk):
                         self.after(0, self.log_error, "Удаление", f"Не удалось удалить {rel_path}: {e}")
                         has_errors = True
 
-                # Загрузка
                 for rel_path, url in to_download:
                     full_path = os.path.join(minecraft_dir, rel_path.replace("/", os.sep))
                     self.after(0, self.log_message, f"📥 Установка: {rel_path}")
@@ -664,27 +647,24 @@ class UpdaterApp(tk.Tk):
                         self.after(0, self.log_error, "Синхронизация", f"Не удалось установить: {rel_path}")
                         has_errors = True
 
-                # Дополнительная очистка пустых папок внутри mods
                 category_path = os.path.join(minecraft_dir, local_path)
                 self._remove_empty_dirs(category_path)
 
             else:
                 self.after(0, self.log_message, f"[ПРЕДУПРЕЖДЕНИЕ] Неизвестная категория '{local_path}' пропущена.")
 
-        # Итоговое сообщение
         if has_errors:
             self.after(0, self.log_message, f"\n⚠️ [ЗАВЕРШЕНО С ОШИБКАМИ] Удалено: {deleted}, загружено: {downloaded}.")
             if not silent:
-                self.after(0, lambda: messagebox.showwarning("Предупреждение", "Синхронизация завершена с ошибками."))
+                self.after(0, lambda: messagebox.showwarning("Предупреждение", "Синхронизация модов завершена с ошибками."))
             return False, downloaded, deleted
         else:
             self.after(0, self.log_message, f"\n✨ [УСПЕХ] Удалено: {deleted}, загружено: {downloaded}.")
             if not silent:
-                self.after(0, lambda: messagebox.showinfo("Готово", "Моды и конфиги успешно синхронизированы!"))
+                self.after(0, lambda: messagebox.showinfo("Готово", "Моды успешно синхронизированы!"))
             return True, downloaded, deleted
 
     def _remove_empty_dirs(self, path):
-        """Рекурсивно удаляет пустые подпапки внутри path, но не саму path."""
         if not os.path.isdir(path):
             return
         for root, dirs, _ in os.walk(path, topdown=False):
@@ -697,6 +677,101 @@ class UpdaterApp(tk.Tk):
                 except OSError:
                     pass
 
+    # ---------- УСТАНОВКА КОНФИГА (отдельная кнопка) ----------
+    def choose_config_file(self):
+        """Открывает диалог выбора файла из корня облака и устанавливает его как конфиг."""
+        items, ok = self.list_public_folder(self.public_key, None)
+        if not ok:
+            messagebox.showerror("Ошибка", "Не удалось получить список файлов в корне облака.")
+            return
+        files = [it for it in items if it.get("type") == "file"]
+        if not files:
+            messagebox.showinfo("Нет файлов", "В корне облака нет файлов.")
+            return
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Выберите файл конфигурации")
+        dialog.geometry("400x300")
+        dialog.grab_set()
+
+        tk.Label(dialog, text="Доступные файлы в корне облака:").pack(pady=5)
+        listbox = tk.Listbox(dialog)
+        listbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        for f in files:
+            listbox.insert(tk.END, f.get("name"))
+
+        def on_ok():
+            selection = listbox.curselection()
+            if selection:
+                index = selection[0]
+                selected = files[index]
+                dialog.destroy()
+                self.install_config_file(selected)
+            else:
+                messagebox.showwarning("Внимание", "Выберите файл.")
+
+        def on_cancel():
+            dialog.destroy()
+
+        frame_btns = tk.Frame(dialog)
+        frame_btns.pack(pady=5)
+        tk.Button(frame_btns, text="Установить", command=on_ok, bg="#4CAF50", fg="white", width=12).pack(side="left", padx=5)
+        tk.Button(frame_btns, text="Отмена", command=on_cancel, width=12).pack(side="left", padx=5)
+
+    def install_config_file(self, file_info):
+        """Скачивает выбранный файл и (если это zip) распаковывает в папку config."""
+        name = file_info.get("name")
+        download_url = file_info.get("file")
+        if not download_url:
+            messagebox.showerror("Ошибка", "Не удалось получить ссылку на файл.")
+            return
+
+        minecraft_dir = self.get_minecraft_dir()
+        if not os.path.exists(minecraft_dir):
+            messagebox.showerror("Ошибка", "Папка инстанса не найдена. Сначала установите Minecraft.")
+            return
+
+        temp_path = os.path.join(minecraft_dir, f"temp_{name}")
+        self.log_message(f"📥 Скачивание {name}...")
+        if not self.download_file(download_url, temp_path):
+            messagebox.showerror("Ошибка", f"Не удалось скачать {name}.")
+            return
+
+        if name.lower().endswith(".zip"):
+            config_path = os.path.join(minecraft_dir, "config")
+            if os.path.exists(config_path):
+                try:
+                    shutil.rmtree(config_path)
+                    self.log_message("[ОЧИСТКА] Удалена старая папка config.")
+                except Exception as e:
+                    self.log_error("Очистка", f"Не удалось удалить папку config: {e}")
+                    os.remove(temp_path)
+                    messagebox.showerror("Ошибка", "Не удалось удалить старую папку config.")
+                    return
+            os.makedirs(config_path, exist_ok=True)
+
+            try:
+                with zipfile.ZipFile(temp_path, 'r') as zf:
+                    zf.extractall(config_path)
+                self.log_message(f"[РАСПАКОВКА] {name} распакован в {config_path}")
+                messagebox.showinfo("Готово", f"Конфигурация установлена из {name}.")
+            except Exception as e:
+                self.log_error("Распаковка", f"Ошибка при распаковке: {e}")
+                messagebox.showerror("Ошибка", f"Не удалось распаковать {name}.")
+            finally:
+                os.remove(temp_path)
+        else:
+            dest = os.path.join(minecraft_dir, name)
+            try:
+                shutil.move(temp_path, dest)
+                self.log_message(f"[УСТАНОВЛЕНО] {name} сохранён в {dest}")
+                messagebox.showinfo("Готово", f"Файл {name} сохранён в папку инстанса.")
+            except Exception as e:
+                self.log_error("Сохранение", f"Ошибка при сохранении: {e}")
+                messagebox.showerror("Ошибка", f"Не удалось сохранить {name}.")
+
+    # ---------- Диагностика облака ----------
     def start_debug_thread(self):
         threading.Thread(target=self.debug_cloud, daemon=True).start()
 
@@ -811,12 +886,10 @@ class UpdaterApp(tk.Tk):
             self.after(0, self.log_error, "Скачивание", f"Сбой при сохранении файла {os.path.basename(local_path)}: {e}")
             return False
 
-
 if __name__ == "__main__":
     import sys
 
     if "--headless" in sys.argv:
-        # Запуск без UI
         print("[INFO] Headless mode started")
         app = UpdaterApp()
         app.withdraw()
@@ -841,7 +914,6 @@ if __name__ == "__main__":
                 print("FATAL: Cannot install Minecraft instance.")
                 sys.exit(1)
 
-        # Headless синхронизирует все категории
         all_local = [local for local, _ in CATEGORIES.values()]
         success, _, _ = app.sync_process(all_local, silent=True)
         if not success:
